@@ -21,6 +21,11 @@ main = do
     putStrLn $ "Redis server listening on port " ++ port
     serve HostAny port $ \(socket, address) -> do
         putStrLn $ "successfully connected client: " ++ show address
-        recv socket 10
-        send socket "+PONG\r\n"
+
+        let loop = do
+              recv socket 50
+              send socket "+PONG\r\n"
+              loop
+
+        loop
         closeSock socket
