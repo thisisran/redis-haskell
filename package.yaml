@@ -10,6 +10,7 @@ dependencies:
   - text # use Text rather than String
   - stm # may help with a concurrent database
   - containers # may help with the database structure and debugging
+  - clock
   - time # may help with the expiry function
   - async # may help with concurrency
   - mtl # may help with structuring
