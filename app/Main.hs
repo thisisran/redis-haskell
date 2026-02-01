@@ -34,6 +34,26 @@ handleRPushCommand = handlePushCommand True
 handleLPushCommand :: [BS.ByteString] -> MemoryStore -> Socket -> IO ()
 handleLPushCommand = handlePushCommand False
 
+lpopHelper :: BS.ByteString -> Maybe Int -> MemoryStore -> Socket -> IO ()
+lpopHelper key (Just count) store sock = do
+  val <- getMemoryStoreVal store key
+  case val of
+    Nothing -> send sock encodeNullBulkString
+    Just (MemoryStoreEntry (MSListVal v) Nothing) ->
+      let normCount = min count $ length v
+      in go v sock normCount
+         where go [] socket _ = send socket encodeNullBulkString
+               go xs socket c = do
+                 setMemoryStoreKey store key (MemoryStoreEntry (MSListVal (drop c xs)) Nothing)
+                 send socket $ getPopped c v
+                 where getPopped 1 (x:_) = encodeBulkString x
+                       getPopped popCount xs = encodeArray (take popCount xs)
+lpopHelper key Nothing store sock = lpopHelper key (Just 1) store sock
+                
+handleLPopCommand :: [BS.ByteString] -> MemoryStore -> Socket -> IO ()
+handleLPopCommand (key : count : _) store sock = lpopHelper key (U.bsToInt count) store sock
+handleLPopCommand (key : _) store sock = lpopHelper key (Just 1) store sock 
+
 handleCommand :: Socket -> MemoryStore -> [BS.ByteString] -> IO ()
 handleCommand sock store [] = pure ()
 handleCommand sock store (x:xs) = case U.bsToLower x of
@@ -107,17 +127,7 @@ handleCommand sock store (x:xs) = case U.bsToLower x of
                                                          Nothing -> send sock $ encodeInteger 0
                                                          Just (MemoryStoreEntry (MSListVal v) Nothing) -> send sock $ encodeInteger $ length v
                                                      _ -> pure () -- TODO: this would report a command argument error for the llen command
-                                         "lpop" -> case xs of
-                                                     (key : _) -> do
-                                                       val <- getMemoryStoreVal store key
-                                                       case val of
-                                                         Nothing -> send sock encodeNullBulkString
-                                                         Just (MemoryStoreEntry (MSListVal v) Nothing) ->
-                                                           go v sock
-                                                           where go [] socket = send socket encodeNullBulkString
-                                                                 go (x:xs) socket = do
-                                                                   setMemoryStoreKey store key (MemoryStoreEntry (MSListVal xs) Nothing)
-                                                                   send socket $ encodeBulkString x
+                                         "lpop" -> handleLPopCommand xs store sock
                                          _           -> pure () -- TODO: this would report a command error
 
 main :: IO ()
