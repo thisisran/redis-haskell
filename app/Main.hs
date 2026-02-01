@@ -74,11 +74,19 @@ handleCommand sock store (x:xs) = case U.bsToLower x of
                                                            Just (MemoryStoreEntry (MSListVal vs) Nothing) -> do
                                                              let itemCount = length vs
                                                              case (U.bsToInt start, U.bsToInt stop) of
-                                                               (Just s, Just st) -> if s >= itemCount || s > st
-                                                                                       then send sock $ encodeArray []
-                                                                                       else send sock $ encodeArray $ go vs s (if st >= itemCount then itemCount - 1 else st)
-                                                                                            where go :: [BS.ByteString] -> Int -> Int -> [BS.ByteString]
-                                                                                                  go xs from to = (take (to - from + 1) . drop from) xs
+                                                               (Just s, Just st) -> send sock $ encodeArray $ go vs (normStart s) (normStop st)
+                                                                                    where go :: [BS.ByteString] -> Int -> Int -> [BS.ByteString]
+                                                                                          go xs from to
+                                                                                            | s >= itemCount || from > to = []
+                                                                                            | otherwise = (take (to - from + 1) . drop from) xs
+                                                                                          normStart index
+                                                                                            | index >= 0 = index
+                                                                                            | -index > itemCount = 0
+                                                                                            | otherwise = itemCount + index
+                                                                                          normStop index
+                                                                                            | index >= 0 = (if index >= itemCount then itemCount - 1 else index)
+                                                                                            | -index > itemCount = 0
+                                                                                            | otherwise = itemCount + index
                                                                _                 -> pure () -- TODO: this would report an error about converting the arg to an int
                                                        _ -> pure () -- TODO: this would report a command argument error for the rpush command
                                          _           -> pure () -- TODO: this would report a command error
