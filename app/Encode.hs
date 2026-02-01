@@ -4,6 +4,7 @@ module Encode
   ( encodeBulkString
   , encodeNullBulkString
   , encodeSimpleString
+  , encodeInteger
   ) where
 
 import qualified Data.ByteString as BS
@@ -17,3 +18,8 @@ encodeNullBulkString = "$-1\r\n"
 
 encodeSimpleString :: BS.ByteString -> BS.ByteString
 encodeSimpleString x = "+" <> x <> "\r\n"
+
+encodeInteger :: Int -> BS.ByteString
+encodeInteger x
+  | x >= 0 = ":" <> (BS8.pack . show) x <> "\r\n"
+  | otherwise = ":-" <> (BS8.pack . show) (-x) <> "\r\n"

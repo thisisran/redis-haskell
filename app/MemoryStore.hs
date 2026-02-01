@@ -1,6 +1,7 @@
 module MemoryStore
   ( MemoryStoreEntry (..)
   , MemoryStore
+  , MemoryStoreValue (..)
   , newMemoryStore
   , getMemoryStoreVal
   , setMemoryStoreKey
@@ -14,8 +15,12 @@ import Types (ExpireDuration (..), ExpireReference (..))
 
 import qualified Data.ByteString as BS
 
+data MemoryStoreValue = MSStringVal BS.ByteString
+                      | MSListVal [BS.ByteString]
+                      deriving (Eq, Show)
+
 data MemoryStoreEntry = MemoryStoreEntry
-  { val :: BS.ByteString,
+  { val :: MemoryStoreValue,
     expiresAt :: Maybe (ExpireDuration, ExpireReference)
   } deriving (Eq, Show)
 
