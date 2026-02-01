@@ -14,6 +14,26 @@ import qualified Utilities as U
 
 import qualified Data.ByteString as BS
 
+handlePushCommand :: Bool -> [BS.ByteString] -> MemoryStore -> Socket -> IO ()
+handlePushCommand isRPush (key : xs) store sock = do
+  val <- getMemoryStoreVal store key
+  case val of
+    Nothing -> do
+      setMemoryStoreKey store key (MemoryStoreEntry (MSListVal newItems) Nothing)
+      send sock $ encodeInteger (length xs)
+    Just (MemoryStoreEntry (MSListVal vs) Nothing) -> do
+      setMemoryStoreKey store key (MemoryStoreEntry (MSListVal $ newList vs) Nothing)
+      send sock $ encodeInteger (length vs + length xs)
+  where newItems = if isRPush then xs else reverse xs
+        newList oldList = if isRPush then oldList ++ newItems else newItems ++ oldList
+handlePushCommand _ _ _ _ = pure () -- TODO: this would report a command argument error
+
+handleRPushCommand :: [BS.ByteString] -> MemoryStore -> Socket -> IO ()
+handleRPushCommand = handlePushCommand True
+
+handleLPushCommand :: [BS.ByteString] -> MemoryStore -> Socket -> IO ()
+handleLPushCommand = handlePushCommand False
+
 handleCommand :: Socket -> MemoryStore -> [BS.ByteString] -> IO ()
 handleCommand sock store [] = pure ()
 handleCommand sock store (x:xs) = case U.bsToLower x of
@@ -55,17 +75,8 @@ handleCommand sock store (x:xs) = case U.bsToLower x of
                                                              _ <- delMemoryStoreKey store key
                                                              send sock encodeNullBulkString
                                                            else send sock $ encodeBulkString v
-                                         "rpush" -> case xs of
-                                                      (key : xs) -> do
-                                                        val <- getMemoryStoreVal store key
-                                                        case val of
-                                                             Nothing -> do
-                                                               setMemoryStoreKey store key (MemoryStoreEntry (MSListVal xs) Nothing)
-                                                               send sock $ encodeInteger (length xs)
-                                                             Just (MemoryStoreEntry (MSListVal vs) Nothing) -> do
-                                                               setMemoryStoreKey store key (MemoryStoreEntry (MSListVal (vs ++ xs)) Nothing)
-                                                               send sock $ encodeInteger (length vs + length xs)
-                                                      _ -> pure () -- TODO: this would report a command argument error for the rpush command
+                                         "rpush" -> handleRPushCommand xs store sock
+                                         "lpush" -> handleLPushCommand xs store sock
                                          "lrange" -> case xs of
                                                        (key : start : stop : _) -> do
                                                          val <- getMemoryStoreVal store key
