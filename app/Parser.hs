@@ -17,15 +17,14 @@ type Parser = Parsec Void BS.ByteString
 
 -- data RESPElement = BulkString Text | Number Int | Array RESPElement deriving Show
 
-parseBulkString :: Parser (Maybe BS.ByteString)
+parseBulkString :: Parser BS.ByteString
 parseBulkString = do
   void (B.char 36) -- '$'
-  n <- L.signed (pure ()) L.decimal
+  n <- L.decimal
   B.crlf
-  if n == (-1) then pure Nothing
-  else Just <$> takeP (Just "bulk string") n <* B.crlf
+  takeP (Just "bulk string") n <* B.crlf
 
-parseArray :: Parser [Maybe BS.ByteString]
+parseArray :: Parser [BS.ByteString]
 parseArray = do
   void (B.char 42) -- '*'
   n <- L.decimal

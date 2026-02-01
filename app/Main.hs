@@ -14,23 +14,23 @@ import qualified Utilities as U
 
 import qualified Data.ByteString as BS
 
-handleCommand :: Socket -> MemoryStore -> [Maybe BS.ByteString] -> IO ()
+handleCommand :: Socket -> MemoryStore -> [BS.ByteString] -> IO ()
 handleCommand sock store [] = pure ()
-handleCommand sock store (Just x:xs) = case U.bsToLower x of
+handleCommand sock store (x:xs) = case U.bsToLower x of
                                          "ping" -> send sock $ encodeSimpleString "PONG"
                                          "echo" -> case xs of
-                                                     (Just arg : _) -> send sock $ encodeBulkString arg
+                                                     (arg : _) -> send sock $ encodeBulkString arg
                                                      _              -> pure () -- TODO: this would report a command argument error
                                          "set"  -> case xs of
-                                                     (Just key : Just val : xs) -> do
+                                                     (key : val : xs) -> do
                                                        now <- U.nowNs
                                                        setMemoryStoreKey store key $ handleArguments val xs now
                                                        send sock $ encodeSimpleString "OK"
                                                        where
                                                          -- TODO: Eventually will need to turn it into a recursive function that will process all the arguments provided
                                                          -- Not just 1 additional one
-                                                         handleArguments :: BS.ByteString -> [Maybe BS.ByteString] -> Integer -> MemoryStoreEntry
-                                                         handleArguments v (Just y1 : Just y2 : _) now = case U.bsToLower y1 of
+                                                         handleArguments :: BS.ByteString -> [BS.ByteString] -> Integer -> MemoryStoreEntry
+                                                         handleArguments v (y1 : y2 : _) now = case U.bsToLower y1 of
                                                            "px" -> let exp = U.bsToInteger y2
                                                                    in
                                                                      case exp of
@@ -44,7 +44,7 @@ handleCommand sock store (Just x:xs) = case U.bsToLower x of
                                                          handleArguments v _ _ = MemoryStoreEntry (MSStringVal v) Nothing
                                                      _ -> pure () -- TODO: this would report a command argument error for the set command
                                          "get"  -> case xs of
-                                                     (Just key : _) -> do
+                                                     (key : _) -> do
                                                        val <- getMemoryStoreVal store key
                                                        case val of
                                                          Nothing -> send sock encodeNullBulkString
@@ -56,15 +56,15 @@ handleCommand sock store (Just x:xs) = case U.bsToLower x of
                                                              send sock encodeNullBulkString
                                                            else send sock $ encodeBulkString v
                                          "rpush" -> case xs of
-                                                      (Just key : Just elem : _) -> do -- TODO: implement support for adding multiple values at the same time
+                                                      (key : xs) -> do
                                                         val <- getMemoryStoreVal store key
                                                         case val of
                                                              Nothing -> do
-                                                               setMemoryStoreKey store key (MemoryStoreEntry (MSListVal [elem]) Nothing)
-                                                               send sock $ encodeInteger 1
+                                                               setMemoryStoreKey store key (MemoryStoreEntry (MSListVal xs) Nothing)
+                                                               send sock $ encodeInteger (length xs)
                                                              Just (MemoryStoreEntry (MSListVal vs) Nothing) -> do
-                                                               setMemoryStoreKey store key (MemoryStoreEntry (MSListVal (vs ++ [elem])) Nothing)
-                                                               send sock $ encodeInteger (length vs + 1)
+                                                               setMemoryStoreKey store key (MemoryStoreEntry (MSListVal (vs ++ xs)) Nothing)
+                                                               send sock $ encodeInteger (length vs + length xs)
                                                       _ -> pure () -- TODO: this would report a command argument error for the rpush command
                                          _           -> pure () -- TODO: this would report a command error
 
