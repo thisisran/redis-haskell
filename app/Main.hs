@@ -1,62 +1,112 @@
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE NumericUnderscores #-}
 
 module Main (main) where
 
 import Network.Simple.TCP (serve, recv, send, HostPreference(HostAny), closeSock, Socket)
 import System.IO (hPutStrLn, hSetBuffering, stdout, stderr, BufferMode(NoBuffering))
 
+import Control.Concurrent.STM
+import Control.Concurrent (threadDelay)
+
 import Parser (parseCommand)
 import qualified Types as T
 import MemoryStore
-import Encode (encodeBulkString, encodeNullBulkString, encodeSimpleString, encodeInteger, encodeArray)
+import Encode (encodeBulkString, encodeNullBulkString, encodeSimpleString, encodeInteger, encodeArray, encodeNullArray)
 import qualified Utilities as U
 
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Char8 as BS8
 
-handlePushCommand :: Bool -> [BS.ByteString] -> MemoryStore -> Socket -> IO ()
+---------------------------------------------------------------------------------------------------------------
+
+handlePushCommand :: Bool -> T.CommandArguments -> MemoryStore -> Socket -> IO ()
 handlePushCommand isRPush (key : xs) store sock = do
-  val <- getMemoryStoreVal store key
+  val <- getMemoryDataVal store key
   case val of
     Nothing -> do
-      setMemoryStoreKey store key (MemoryStoreEntry (MSListVal newItems) Nothing)
+      setMemoryDataKey store key (MemoryStoreEntry (MSListVal newItems) Nothing)
       send sock $ encodeInteger (length xs)
     Just (MemoryStoreEntry (MSListVal vs) Nothing) -> do
-      setMemoryStoreKey store key (MemoryStoreEntry (MSListVal $ newList vs) Nothing)
+      setMemoryDataKey store key (MemoryStoreEntry (MSListVal $ newList vs) Nothing)
       send sock $ encodeInteger (length vs + length xs)
   where newItems = if isRPush then xs else reverse xs
         newList oldList = if isRPush then oldList ++ newItems else newItems ++ oldList
 handlePushCommand _ _ _ _ = pure () -- TODO: this would report a command argument error
 
-handleRPushCommand :: [BS.ByteString] -> MemoryStore -> Socket -> IO ()
+handleRPushCommand :: T.CommandArguments -> MemoryStore -> Socket -> IO ()
 handleRPushCommand = handlePushCommand True
 
-handleLPushCommand :: [BS.ByteString] -> MemoryStore -> Socket -> IO ()
+handleLPushCommand :: T.CommandArguments -> MemoryStore -> Socket -> IO ()
 handleLPushCommand = handlePushCommand False
 
-lpopHelper :: BS.ByteString -> Maybe Int -> MemoryStore -> Socket -> IO ()
+lpopHelper :: T.DataKey -> Maybe Int -> MemoryStore -> Socket -> IO T.BLPopResponse
 lpopHelper key (Just count) store sock = do
-  val <- getMemoryStoreVal store key
+  val <- getMemoryDataVal store key
   case val of
-    Nothing -> send sock encodeNullBulkString
+    Nothing -> pure encodeNullBulkString
     Just (MemoryStoreEntry (MSListVal v) Nothing) ->
       let normCount = min count $ length v
       in go v sock normCount
-         where go [] socket _ = send socket encodeNullBulkString
+         where go [] socket _ = pure encodeNullBulkString
                go xs socket c = do
-                 setMemoryStoreKey store key (MemoryStoreEntry (MSListVal (drop c xs)) Nothing)
-                 send socket $ getPopped c v
+                 setMemoryDataKey store key (MemoryStoreEntry (MSListVal (drop c xs)) Nothing)
+                 pure $ getPopped c v
                  where getPopped 1 (x:_) = encodeBulkString x
-                       getPopped popCount xs = encodeArray (take popCount xs)
+                       getPopped popCount xs = encodeArray True (take popCount xs)
 lpopHelper key Nothing store sock = lpopHelper key (Just 1) store sock
                 
-handleLPopCommand :: [BS.ByteString] -> MemoryStore -> Socket -> IO ()
-handleLPopCommand (key : count : _) store sock = lpopHelper key (U.bsToInt count) store sock
-handleLPopCommand (key : _) store sock = lpopHelper key (Just 1) store sock 
+handleLPopCommand :: T.CommandArguments -> MemoryStore -> Socket -> IO ()
+handleLPopCommand (key : count : _) store sock = do
+  resp <- lpopHelper key (U.bsToInt count) store sock
+  send sock resp
+  
+handleLPopCommand (key : _) store sock = do
+  resp <- lpopHelper key (Just 1) store sock
+  send sock resp
 
-handleCommand :: Socket -> MemoryStore -> [BS.ByteString] -> IO ()
-handleCommand sock store [] = pure ()
-handleCommand sock store (x:xs) = case U.bsToLower x of
+handleBLPop :: T.CommandArguments -> MemoryStore -> Socket -> T.ClientID -> IO ()
+handleBLPop (key : timeout : _) store sock cid = case U.bsToInt timeout of
+  Nothing -> pure () -- send error
+  Just tout -> go 0
+               where go elapsed
+                       | elapsed > tout && tout > 0 = send sock encodeNullArray
+                       | otherwise = do
+                           val <- getMemoryDataVal store key
+                           case val of
+                             Nothing -> do
+                               addMemoryWaiter store key cid
+                               waitAndContinue elapsed
+                             Just (MemoryStoreEntry (MSListVal []) Nothing) -> do
+                               addMemoryWaiter store key cid
+                               waitAndContinue elapsed
+                             Just (MemoryStoreEntry (MSListVal (x:xs)) Nothing) -> do
+                               waiters <- getMemoryWaitersVal store key
+                               case waiters of
+                                 Nothing -> do
+                                   resp <- lpopHelper key (Just 1) store sock
+                                   BS8.hPutStrLn stderr $ "Returning (" <> (BS8.pack . show) cid <> "): " <> key <> " with " <> resp
+                                   send sock $ encodeArray False [encodeBulkString key, resp]
+                                 Just (BLPopWaiter x:xs) -> do
+                                   if x == cid then do
+                                       resp <- lpopHelper key (Just 1) store sock
+                                       BS8.hPutStrLn stderr $ "Returning2 (" <> (BS8.pack . show) cid <> "): " <> key <> " with " <> resp
+                                       send sock $ encodeArray False [encodeBulkString key, resp]
+                                       setMemoryWaitersKey store key xs
+                                   else do
+                                     addMemoryWaiter store key cid
+                                     waitAndContinue elapsed                                                                
+                                     
+                     waitAndContinue elapsed = do
+                       threadDelay 1_000_000
+                       go (elapsed + 1)
+
+---------------------------------------------------------------------------------------------------------------
+
+handleCommand :: Socket -> MemoryStore -> T.ClientID -> [BS.ByteString] -> IO ()
+handleCommand sock store _ [] = pure ()
+handleCommand sock store cid (x:xs) = case U.bsToLower x of
                                          "ping" -> send sock $ encodeSimpleString "PONG"
                                          "echo" -> case xs of
                                                      (arg : _) -> send sock $ encodeBulkString arg
@@ -64,7 +114,7 @@ handleCommand sock store (x:xs) = case U.bsToLower x of
                                          "set"  -> case xs of
                                                      (key : val : xs) -> do
                                                        now <- U.nowNs
-                                                       setMemoryStoreKey store key $ handleArguments val xs now
+                                                       setMemoryDataKey store key $ handleArguments val xs now
                                                        send sock $ encodeSimpleString "OK"
                                                        where
                                                          -- TODO: Eventually will need to turn it into a recursive function that will process all the arguments provided
@@ -80,32 +130,32 @@ handleCommand sock store (x:xs) = case U.bsToLower x of
                                                                    in
                                                                      case exp of
                                                                        Nothing -> MemoryStoreEntry (MSStringVal v) Nothing -- TODO: this would report a command argument error
-                                                                       Just y2Int -> MemoryStoreEntry (MSStringVal v) $ Just (T.ExpireDuration $ y2Int * 1000, T.ExpireReference now)
+                                                                       Just y2Int -> MemoryStoreEntry (MSStringVal v) $ Just (T.ExpireDuration $ y2Int * 1_000, T.ExpireReference now)
                                                          handleArguments v _ _ = MemoryStoreEntry (MSStringVal v) Nothing
                                                      _ -> pure () -- TODO: this would report a command argument error for the set command
                                          "get"  -> case xs of
                                                      (key : _) -> do
-                                                       val <- getMemoryStoreVal store key
+                                                       val <- getMemoryDataVal store key
                                                        case val of
                                                          Nothing -> send sock encodeNullBulkString
                                                          Just (MemoryStoreEntry (MSStringVal v) Nothing) -> send sock $ encodeBulkString v
                                                          Just (MemoryStoreEntry (MSStringVal v) (Just (T.ExpireDuration exDur, T.ExpireReference exRef))) -> do
                                                            hasPassed <- U.hasElapsedSince exDur exRef
                                                            if hasPassed then do
-                                                             _ <- delMemoryStoreKey store key
+                                                             _ <- delMemoryDataKey store key
                                                              send sock encodeNullBulkString
                                                            else send sock $ encodeBulkString v
                                          "rpush" -> handleRPushCommand xs store sock
                                          "lpush" -> handleLPushCommand xs store sock
                                          "lrange" -> case xs of
                                                        (key : start : stop : _) -> do
-                                                         val <- getMemoryStoreVal store key
+                                                         val <- getMemoryDataVal store key
                                                          case val of
-                                                           Nothing -> send sock $ encodeArray []
+                                                           Nothing -> send sock $ encodeArray True []
                                                            Just (MemoryStoreEntry (MSListVal vs) Nothing) -> do
                                                              let itemCount = length vs
                                                              case (U.bsToInt start, U.bsToInt stop) of
-                                                               (Just s, Just st) -> send sock $ encodeArray $ go vs (normStart s) (normStop st)
+                                                               (Just s, Just st) -> send sock $ encodeArray True $ go vs (normStart s) (normStop st)
                                                                                     where go :: [BS.ByteString] -> Int -> Int -> [BS.ByteString]
                                                                                           go xs from to
                                                                                             | s >= itemCount || from > to = []
@@ -122,12 +172,13 @@ handleCommand sock store (x:xs) = case U.bsToLower x of
                                                        _ -> pure () -- TODO: this would report a command argument error for the rpush command
                                          "llen" -> case xs of
                                                      (key : _) -> do
-                                                       val <- getMemoryStoreVal store key
+                                                       val <- getMemoryDataVal store key
                                                        case val of
                                                          Nothing -> send sock $ encodeInteger 0
                                                          Just (MemoryStoreEntry (MSListVal v) Nothing) -> send sock $ encodeInteger $ length v
                                                      _ -> pure () -- TODO: this would report a command argument error for the llen command
                                          "lpop" -> handleLPopCommand xs store sock
+                                         "blpop" -> handleBLPop xs store sock cid
                                          _           -> pure () -- TODO: this would report a command error
 
 main :: IO ()
@@ -140,18 +191,24 @@ main = do
     -- hPutStrLn stderr "Logs from your program will appear here"
 
     store <- newMemoryStore
+    nextID <- newTVarIO (0 :: Int)
 
     let port = "6379"
     putStrLn $ "Redis server listening on port " ++ port
     serve HostAny port $ \(socket, address) -> do
         putStrLn $ "successfully connected client: " ++ show address
 
+        cid <- atomically $ do
+          i <- readTVar nextID
+          writeTVar nextID (i + 1)
+          pure i                                                                                              
+
         let loop = do
               received <- recv socket 4096
               case received of
                 Nothing -> pure ()
                 Just raw_command -> case parseCommand raw_command of
-                    Right message -> handleCommand socket store message >> loop
+                    Right message -> handleCommand socket store cid message >> loop
                     Left _ -> loop
 
         loop
