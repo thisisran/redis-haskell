@@ -100,6 +100,13 @@ handleCommand sock store (x:xs) = case U.bsToLower x of
                                                                                             | otherwise = itemCount + index
                                                                _                 -> pure () -- TODO: this would report an error about converting the arg to an int
                                                        _ -> pure () -- TODO: this would report a command argument error for the rpush command
+                                         "llen" -> case xs of
+                                                     (key : _) -> do
+                                                       val <- getMemoryStoreVal store key
+                                                       case val of
+                                                         Nothing -> send sock $ encodeInteger 0
+                                                         Just (MemoryStoreEntry (MSListVal v) Nothing) -> send sock $ encodeInteger $ length v
+                                                     _ -> pure () -- TODO: this would report a command argument error for the llen command
                                          _           -> pure () -- TODO: this would report a command error
 
 main :: IO ()
