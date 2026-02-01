@@ -9,7 +9,7 @@ import System.IO (hPutStrLn, hSetBuffering, stdout, stderr, BufferMode(NoBufferi
 import Parser (parseCommand)
 import qualified Types as T
 import MemoryStore
-import Encode (encodeBulkString, encodeNullBulkString, encodeSimpleString, encodeInteger)
+import Encode (encodeBulkString, encodeNullBulkString, encodeSimpleString, encodeInteger, encodeArray)
 import qualified Utilities as U
 
 import qualified Data.ByteString as BS
@@ -66,6 +66,21 @@ handleCommand sock store (x:xs) = case U.bsToLower x of
                                                                setMemoryStoreKey store key (MemoryStoreEntry (MSListVal (vs ++ xs)) Nothing)
                                                                send sock $ encodeInteger (length vs + length xs)
                                                       _ -> pure () -- TODO: this would report a command argument error for the rpush command
+                                         "lrange" -> case xs of
+                                                       (key : start : stop : _) -> do
+                                                         val <- getMemoryStoreVal store key
+                                                         case val of
+                                                           Nothing -> send sock $ encodeArray []
+                                                           Just (MemoryStoreEntry (MSListVal vs) Nothing) -> do
+                                                             let itemCount = length vs
+                                                             case (U.bsToInt start, U.bsToInt stop) of
+                                                               (Just s, Just st) -> if s >= itemCount || s > st
+                                                                                       then send sock $ encodeArray []
+                                                                                       else send sock $ encodeArray $ go vs s (if st >= itemCount then itemCount - 1 else st)
+                                                                                            where go :: [BS.ByteString] -> Int -> Int -> [BS.ByteString]
+                                                                                                  go xs from to = (take (to - from + 1) . drop from) xs
+                                                               _                 -> pure () -- TODO: this would report an error about converting the arg to an int
+                                                       _ -> pure () -- TODO: this would report a command argument error for the rpush command
                                          _           -> pure () -- TODO: this would report a command error
 
 main :: IO ()

@@ -1,6 +1,7 @@
 module Utilities
   ( bsToLower
   , bsToInteger
+  , bsToInt
   , nowNs
   , hasElapsedSince
   ) where
@@ -20,6 +21,12 @@ bsToInteger :: BS.ByteString -> Maybe Integer
 bsToInteger bs = do
   (n, rest) <- BS8.readInteger bs   -- parses a signed decimal prefix
   guard (BS8.null rest)             -- require full consumption
+  pure n
+
+bsToInt :: BS.ByteString -> Maybe Int
+bsToInt bs = do
+  (n, rest) <- BS8.readInt bs   -- parses a signed decimal prefix
+  guard (BS8.null rest)         -- require full consumption
   pure n
 
 nowNs :: IO Integer

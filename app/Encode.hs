@@ -5,6 +5,7 @@ module Encode
   , encodeNullBulkString
   , encodeSimpleString
   , encodeInteger
+  , encodeArray
   ) where
 
 import qualified Data.ByteString as BS
@@ -23,3 +24,6 @@ encodeInteger :: Int -> BS.ByteString
 encodeInteger x
   | x >= 0 = ":" <> (BS8.pack . show) x <> "\r\n"
   | otherwise = ":-" <> (BS8.pack . show) (-x) <> "\r\n"
+
+encodeArray :: [BS.ByteString] -> BS.ByteString
+encodeArray xs = "*" <> (BS8.pack . show . length) xs <> "\r\n" <> foldr (\x acc -> encodeBulkString x <> acc) BS.empty xs
