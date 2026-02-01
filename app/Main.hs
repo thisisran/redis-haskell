@@ -107,6 +107,17 @@ handleCommand sock store (x:xs) = case U.bsToLower x of
                                                          Nothing -> send sock $ encodeInteger 0
                                                          Just (MemoryStoreEntry (MSListVal v) Nothing) -> send sock $ encodeInteger $ length v
                                                      _ -> pure () -- TODO: this would report a command argument error for the llen command
+                                         "lpop" -> case xs of
+                                                     (key : _) -> do
+                                                       val <- getMemoryStoreVal store key
+                                                       case val of
+                                                         Nothing -> send sock encodeNullBulkString
+                                                         Just (MemoryStoreEntry (MSListVal v) Nothing) ->
+                                                           go v sock
+                                                           where go [] socket = send socket encodeNullBulkString
+                                                                 go (x:xs) socket = do
+                                                                   setMemoryStoreKey store key (MemoryStoreEntry (MSListVal xs) Nothing)
+                                                                   send socket $ encodeBulkString x
                                          _           -> pure () -- TODO: this would report a command error
 
 main :: IO ()
