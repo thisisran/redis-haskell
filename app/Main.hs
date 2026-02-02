@@ -180,6 +180,14 @@ handleCommand sock store cid (x:xs) = case U.bsToLower x of
                                                      _ -> pure () -- TODO: this would report a command argument error for the llen command
                                          "lpop" -> handleLPopCommand xs store sock
                                          "blpop" -> handleBLPop xs store sock cid
+                                         "type" -> case xs of
+                                           (key : _) -> do
+                                             val <- getMemoryDataVal store key
+                                             case val of
+                                               Nothing -> send sock $ encodeSimpleString "none"
+                                               Just v -> send sock $ encodeSimpleString "string"
+                                           _         -> pure () -- TODO: this would report a command argument error for the llen command
+
                                          _           -> pure () -- TODO: this would report a command error
 
 main :: IO ()
