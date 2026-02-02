@@ -2,12 +2,15 @@ module Utilities
   ( bsToLower
   , bsToInteger
   , bsToInt
+  , bsToDouble
   , nowNs
   , hasElapsedSince
   ) where
 
 import Control.Monad (guard)
 import Data.Char (toLower)
+
+import Text.Read (readMaybe)
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -28,6 +31,9 @@ bsToInt bs = do
   (n, rest) <- BS8.readInt bs   -- parses a signed decimal prefix
   guard (BS8.null rest)         -- require full consumption
   pure n
+
+bsToDouble :: BS.ByteString -> Maybe Double
+bsToDouble = readMaybe . BS8.unpack
 
 nowNs :: IO Integer
 nowNs = toNanoSecs <$> getTime Monotonic

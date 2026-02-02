@@ -67,12 +67,15 @@ handleLPopCommand (key : _) store sock = do
   send sock resp
 
 handleBLPop :: T.CommandArguments -> MemoryStore -> Socket -> T.ClientID -> IO ()
-handleBLPop (key : timeout : _) store sock cid = case U.bsToInt timeout of
+handleBLPop (key : timeout : _) store sock cid = case U.bsToDouble timeout of
   Nothing -> pure () -- send error
   Just tout -> go 0
                where go elapsed
-                       | elapsed > tout && tout > 0 = send sock encodeNullArray
+                       | elapsed > tout && tout > 0 = do
+                         -- BS8.hPutStrLn stderr $ "ELAPSED:  elapsed: " <> BS8.pack (show elapsed) <> "timeout: " <> BS8.pack (show tout)
+                         send sock encodeNullArray
                        | otherwise = do
+                           -- BS8.hPutStrLn stderr $ "NOT ELASPED YET elapsed: " <> BS8.pack (show elapsed) <> "timeout: " <> BS8.pack (show timeout)
                            val <- getMemoryDataVal store key
                            case val of
                              Nothing -> do
@@ -86,21 +89,19 @@ handleBLPop (key : timeout : _) store sock cid = case U.bsToInt timeout of
                                case waiters of
                                  Nothing -> do
                                    resp <- lpopHelper key (Just 1) store sock
-                                   BS8.hPutStrLn stderr $ "Returning (" <> (BS8.pack . show) cid <> "): " <> key <> " with " <> resp
                                    send sock $ encodeArray False [encodeBulkString key, resp]
                                  Just (BLPopWaiter x:xs) -> do
                                    if x == cid then do
                                        resp <- lpopHelper key (Just 1) store sock
-                                       BS8.hPutStrLn stderr $ "Returning2 (" <> (BS8.pack . show) cid <> "): " <> key <> " with " <> resp
                                        send sock $ encodeArray False [encodeBulkString key, resp]
                                        setMemoryWaitersKey store key xs
                                    else do
                                      addMemoryWaiter store key cid
                                      waitAndContinue elapsed                                                                
-                                     
+
                      waitAndContinue elapsed = do
-                       threadDelay 1_000_000
-                       go (elapsed + 1)
+                       threadDelay 1_000
+                       go $ elapsed + 0.001
 
 ---------------------------------------------------------------------------------------------------------------
 
