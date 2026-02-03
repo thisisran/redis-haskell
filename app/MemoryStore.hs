@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module MemoryStore
   ( MemoryStoreEntry (..)
   , MemoryStore
@@ -8,7 +10,9 @@ module MemoryStore
   , setMemoryDataKey
   , delMemoryDataKey
   , getMemoryWaitersVal
+  , getMemoryDataStreams
   , setMemoryWaitersKey
+  , setMemoryDataStreams
   , delMemoryWaitersKey
   , addMemoryWaiter
   , entryIdToBS
@@ -101,8 +105,14 @@ newMemoryStore = MemoryStore <$> newTVarIO M.empty <*> newTVarIO M.empty
 getMemoryDataVal :: MemoryStore -> T.DataKey -> IO (Maybe MemoryStoreEntry)
 getMemoryDataVal (MemoryStore d w) k = M.lookup k <$> readTVarIO d
 
+getMemoryDataStreams :: MemoryStore -> IO (Maybe MemoryStoreEntry)
+getMemoryDataStreams store = getMemoryDataVal store "streams"
+
 setMemoryDataKey :: MemoryStore -> T.DataKey -> MemoryStoreEntry -> IO ()
 setMemoryDataKey (MemoryStore d w) k v = atomically $ modifyTVar' d (M.insert k v)
+
+setMemoryDataStreams :: MemoryStore -> MemoryStoreEntry -> IO ()
+setMemoryDataStreams store = setMemoryDataKey store "streams"
 
 delMemoryDataKey :: MemoryStore -> T.DataKey -> IO Bool
 delMemoryDataKey (MemoryStore d w) k = atomically $ do

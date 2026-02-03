@@ -11,7 +11,7 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as M
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
-import Encode (encodeArray, encodeBulkString, encodeInteger, encodeNullArray, encodeNullBulkString, encodeSimpleString)
+import Encode (encodeArray, encodeBulkString, encodeInteger, encodeNullArray, encodeNullBulkString, encodeSimpleString, encodeSimpleError)
 import MemoryStore
 import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve)
 import Parser
@@ -152,7 +152,7 @@ typeCommand socket store key = do
   val <- getMemoryDataVal store key
   case val of
     Nothing -> do
-      maybeStream <- getMemoryDataVal store "streams"  
+      maybeStream <- getMemoryDataStreams store  
       checkIfStream maybeStream 
       where
         checkIfStream (Just (MemoryStoreEntry (MSStreams (Streams streams)) _)) = do
@@ -164,8 +164,9 @@ typeCommand socket store key = do
     Just (MemoryStoreEntry (MSListVal _) _) -> send socket $ encodeSimpleString "list"
 
 xaddCommand :: Socket -> MemoryStore -> BS.ByteString -> EntryId -> [(BS.ByteString, BS.ByteString)] -> IO ()
-xaddCommand socket store streamID entryID values = do
-  mayStreams <- getMemoryDataVal store "streams"
+xaddCommand socket store streamID entryID@(EntryId 0 0) values = send socket (encodeSimpleError "The ID specified in XADD must be greater than 0-0")
+xaddCommand socket store streamID entryID@(EntryId mili seq) values = do
+  mayStreams <- getMemoryDataStreams store
   case mayStreams of
     Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
     _                                                -> handleStreams (Streams HM.empty)
@@ -173,14 +174,22 @@ xaddCommand socket store streamID entryID values = do
       handleStreams :: Streams BS.ByteString (M.Map BS.ByteString BS.ByteString) -> IO ()
       handleStreams (Streams streams) = do
         let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
-        let newEntry = insertValues values M.empty
-        let newStream = Stream (M.insert entryID newEntry oldStream)
-        let newStreams = HM.insert streamID newStream streams
-        setMemoryDataKey store "streams" (MemoryStoreEntry (MSStreams (Streams newStreams)) Nothing)
-        send socket $ encodeBulkString (entryIdToBS entryID)
-        where
-          insertValues ((key, value) : xs) m = insertValues xs (M.insert key value m)
-          insertValues [] m = m
+        let existingKeys = reverse (M.keys oldStream)
+        case existingKeys of
+          [] -> addNewEntry oldStream
+          (x:_) -> if x >= entryID
+                   then send socket $ encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item"
+                   else addNewEntry oldStream
+          where
+            addNewEntry oldStream = do
+              let newEntry = insertValues values M.empty
+              let newStream = Stream (M.insert entryID newEntry oldStream)
+              let newStreams = HM.insert streamID newStream streams
+              setMemoryDataStreams store (MemoryStoreEntry (MSStreams (Streams newStreams)) Nothing)
+              send socket $ encodeBulkString (entryIdToBS entryID)
+              where
+                insertValues ((key, value) : xs) m = insertValues xs (M.insert key value m)
+                insertValues [] m = m
 
 main :: IO ()
 main = do

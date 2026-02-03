@@ -7,6 +7,7 @@ module Encode
   , encodeInteger
   , encodeArray
   , encodeNullArray
+  , encodeSimpleError
   ) where
 
 import qualified Data.ByteString as BS
@@ -31,3 +32,6 @@ encodeNullArray = "*-1\r\n"
 
 encodeArray :: Bool  -> [BS.ByteString] -> BS.ByteString
 encodeArray encodeStr xs = "*" <> (BS8.pack . show . length) xs <> "\r\n" <> foldr (\x acc -> let curr = if encodeStr then encodeBulkString x else x in curr <> acc) BS.empty xs
+
+encodeSimpleError :: BS.ByteString -> BS.ByteString
+encodeSimpleError x = "-ERR " <> x <> "\r\n"
