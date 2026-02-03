@@ -38,7 +38,9 @@ import qualified Data.ByteString.Char8 as BS8
 import Data.Word (Word64)
 
 data EntryId = EntryId !Word64 !Word64
-  deriving (Eq, Ord, Show)
+             | EntryGenSeq !Word64
+             | EntryGenNew
+             deriving (Eq, Ord, Show)
 
 entryIdToBS :: EntryId -> BS.ByteString
 entryIdToBS (EntryId ms seq) =
@@ -68,18 +70,18 @@ newtype Stream a    = Stream (M.Map EntryId a)
 newtype Streams n a = Streams (HM.HashMap n (Stream a))
                       deriving (Eq, Show)
 
-readAfter :: EntryId -> Stream a -> [(EntryId, a)]
-readAfter sid (Stream stream) = (M.toAscList . snd . M.split sid) stream
+-- readAfter :: EntryId -> Stream a -> [(EntryId, a)]
+-- readAfter sid (Stream stream) = (M.toAscList . snd . M.split sid) stream
 
-readFromInclusive :: EntryId -> Stream a -> [(EntryId, a)]
-readFromInclusive sid (Stream m) =
-  case M.splitLookup sid m of
-    (_lt, Nothing, gt) -> M.toAscList gt
-    (_lt, Just v, gt)  -> (sid, v) : M.toAscList gt
+-- readFromInclusive :: EntryId -> Stream a -> [(EntryId, a)]
+-- readFromInclusive sid (Stream m) =
+--   case M.splitLookup sid m of
+--     (_lt, Nothing, gt) -> M.toAscList gt
+--     (_lt, Just v, gt)  -> (sid, v) : M.toAscList gt
 
--- limit count (like XREAD COUNT)
-readAfterN :: Int -> EntryId -> Stream a -> [(EntryId, a)]
-readAfterN n sid = take n . readAfter sid
+-- -- limit count (like XREAD COUNT)
+-- readAfterN :: Int -> EntryId -> Stream a -> [(EntryId, a)]
+-- readAfterN n sid = take n . readAfter sid
 
 data MemoryStoreValue = MSStringVal BS.ByteString
                       | MSListVal [BS.ByteString]

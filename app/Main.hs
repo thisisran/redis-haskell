@@ -164,7 +164,22 @@ typeCommand socket store key = do
     Just (MemoryStoreEntry (MSListVal _) _) -> send socket $ encodeSimpleString "list"
 
 xaddCommand :: Socket -> MemoryStore -> BS.ByteString -> EntryId -> [(BS.ByteString, BS.ByteString)] -> IO ()
-xaddCommand socket store streamID entryID@(EntryId 0 0) values = send socket (encodeSimpleError "The ID specified in XADD must be greater than 0-0")
+xaddCommand socket store streamID (EntryId 0 0) values = send socket (encodeSimpleError "The ID specified in XADD must be greater than 0-0")
+xaddCommand socket store streamID (EntryGenSeq mili) values = do
+  mayStreams <- getMemoryDataStreams store
+  case mayStreams of
+    Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
+    _                                                -> handleStreams (Streams HM.empty)
+    where
+      handleStreams :: Streams BS.ByteString (M.Map BS.ByteString BS.ByteString) -> IO ()
+      handleStreams (Streams streams) = do
+        let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
+        let filtered = M.filterWithKey (\(EntryId m _) _ -> m == mili) oldStream
+        case M.lookupMax filtered of
+          Nothing -> do
+            let seq = if mili == 0 then 1 else 0
+            xaddCommand socket store streamID (EntryId mili seq) values
+          Just (EntryId m v, _) -> xaddCommand socket store streamID (EntryId mili (v+1)) values
 xaddCommand socket store streamID entryID@(EntryId mili seq) values = do
   mayStreams <- getMemoryDataStreams store
   case mayStreams of
@@ -174,12 +189,11 @@ xaddCommand socket store streamID entryID@(EntryId mili seq) values = do
       handleStreams :: Streams BS.ByteString (M.Map BS.ByteString BS.ByteString) -> IO ()
       handleStreams (Streams streams) = do
         let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
-        let existingKeys = reverse (M.keys oldStream)
-        case existingKeys of
-          [] -> addNewEntry oldStream
-          (x:_) -> if x >= entryID
-                   then send socket $ encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item"
-                   else addNewEntry oldStream
+        case M.lookupMax oldStream of
+          Nothing -> addNewEntry oldStream
+          Just (x, _) -> if x >= entryID
+                         then send socket $ encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item"
+                         else addNewEntry oldStream
           where
             addNewEntry oldStream = do
               let newEntry = insertValues values M.empty

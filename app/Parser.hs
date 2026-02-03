@@ -19,7 +19,7 @@ import Data.Maybe (fromMaybe)
 import Data.Void (Void)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import Text.Megaparsec (Parsec, takeP, (<?>), eof, parse, errorBundlePretty)
+import Text.Megaparsec (Parsec, takeP, (<?>), eof, parse, errorBundlePretty, (<|>))
 import Text.Megaparsec.Stream (VisualStream, TraversableStream)
 import Text.Megaparsec.Error (ShowErrorComponent, ParseErrorBundle)
 
@@ -210,7 +210,7 @@ parseXADD :: Int -> Parser Command
 parseXADD n = do
   expectMinArity 5 n
   streamID <- parseBulkString
-  entryID <- parseStreamId
+  entryID <- parseEntryId
   values <- countKeyValue $ (n - 3) `div` 2
   pure (XAdd streamID entryID values)
 
@@ -230,13 +230,20 @@ prettifyErrors :: (Text.Megaparsec.Stream.VisualStream s,
      Text.Megaparsec.Error.ParseErrorBundle s e -> String
 prettifyErrors = errorBundlePretty
 
-parseStreamId :: Parser MS.EntryId
-parseStreamId = do
+parseEntryId :: Parser MS.EntryId
+parseEntryId = do
   void (B.char 36) -- '$'
   L.decimal
   B.crlf
   pre <- L.decimal
-  B.char 45
-  post <- L.decimal
-  B.crlf
-  pure (MS.EntryId pre post)
+  void (B.char 45) -- '-'
+  fullSeq pre <|> missingSeq pre
+  where
+    fullSeq p = do
+      post <- L.decimal
+      B.crlf
+      pure (MS.EntryId p post)
+    missingSeq p = do
+      void (B.char 42) -- *
+      B.crlf
+      pure (MS.EntryGenSeq p)
