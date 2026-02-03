@@ -26,7 +26,7 @@ setCommand socket store key val ex = do
   setMemoryDataKey store key $ handleExpiry ex now
   send socket $ encodeSimpleString "OK"
   where handleExpiry Nothing timeRef = MemoryStoreEntry (MSStringVal val) Nothing
-        handleExpiry (Just (EX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (T.ExpireDuration (fromIntegral $ ex * 1_000), T.ExpireReference timeRef)
+        handleExpiry (Just (EX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (T.ExpireDuration (fromIntegral $ ex * 1_000_000), T.ExpireReference timeRef)
         handleExpiry (Just (PX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (T.ExpireDuration (fromIntegral ex), T.ExpireReference timeRef)
 
 getCommand :: Socket -> MemoryStore -> BS.ByteString -> IO ()
@@ -180,6 +180,9 @@ xaddCommand socket store streamID (EntryGenSeq mili) values = do
             let seq = if mili == 0 then 1 else 0
             xaddCommand socket store streamID (EntryId mili seq) values
           Just (EntryId m v, _) -> xaddCommand socket store streamID (EntryId mili (v+1)) values
+xaddCommand socket store streamID EntryGenNew values = do
+  now <- U.nowNs
+  xaddCommand socket store streamID (EntryGenSeq (fromIntegral now)) values
 xaddCommand socket store streamID entryID@(EntryId mili seq) values = do
   mayStreams <- getMemoryDataStreams store
   case mayStreams of

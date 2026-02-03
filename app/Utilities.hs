@@ -1,3 +1,5 @@
+{-# LANGUAGE NumericUnderscores #-}
+
 module Utilities
   ( bsToLower
   , bsToInteger
@@ -15,7 +17,9 @@ import Text.Read (readMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 
-import System.Clock (getTime, toNanoSecs, Clock (Monotonic))
+-- import System.Clock (getTime, toNanoSecs, Clock (Monotonic))
+import Data.Time.Clock.POSIX (getPOSIXTime)
+
 
 bsToLower :: BS.ByteString -> BS.ByteString
 bsToLower = BS8.map toLower
@@ -36,13 +40,11 @@ bsToDouble :: BS.ByteString -> Maybe Double
 bsToDouble = readMaybe . BS8.unpack
 
 nowNs :: IO Integer
-nowNs = toNanoSecs <$> getTime Monotonic
-
-elapsedMs :: Integer -> Integer -> Integer
-elapsedMs start end = (end - start) `div` 1000000
+nowNs = fmap (floor . (* 1000)) getPOSIXTime
+-- nowNs = toNanoSecs <$> getTime Monotonic
 
 -- example
 hasElapsedSince :: Integer -> Integer -> IO Bool
 hasElapsedSince thresholdMs startNs = do
   endNs <- nowNs
-  pure (elapsedMs startNs endNs >= thresholdMs)
+  pure (endNs - startNs >= thresholdMs)

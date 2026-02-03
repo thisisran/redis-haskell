@@ -7,6 +7,7 @@ module Parser
     , SetExpiry (..)
     , runParse
     , prettifyErrors
+    -- , parseEntryId
   ) where
 
 import Text.Read (readMaybe)
@@ -235,10 +236,16 @@ parseEntryId = do
   void (B.char 36) -- '$'
   L.decimal
   B.crlf
-  pre <- L.decimal
-  void (B.char 45) -- '-'
-  fullSeq pre <|> missingSeq pre
+  parseAuto <|> (parseMili >>= (\pre -> fullSeq pre <|> missingSeq pre))
   where
+    parseAuto = do
+      void (B.char 42)
+      B.crlf
+      pure MS.EntryGenNew
+    parseMili = do
+      pre <- L.decimal
+      void (B.char 45) -- '-'
+      pure pre
     fullSeq p = do
       post <- L.decimal
       B.crlf
