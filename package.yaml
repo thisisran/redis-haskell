@@ -10,7 +10,7 @@ dependencies:
   - text # use Text rather than String
   - stm # may help with a concurrent database
   - containers # may help with the database structure and debugging
-  # - unordered-containers
+  - unordered-containers
   # - hashable
   - clock
   - time # may help with the expiry function
