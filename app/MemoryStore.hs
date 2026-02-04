@@ -19,6 +19,7 @@ module MemoryStore
   , EntryId (..)
   , Stream (..)
   , Streams (..)
+  , RangeEntryId (..)
   ) where
 
 import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar')
@@ -41,6 +42,10 @@ data EntryId = EntryId !Word64 !Word64
              | EntryGenSeq !Word64
              | EntryGenNew
              deriving (Eq, Ord, Show)
+
+data RangeEntryId = RangeMili !Word64
+                  | RangeEntryId !Word64 !Word64
+                  deriving (Eq, Show)
 
 entryIdToBS :: EntryId -> BS.ByteString
 entryIdToBS (EntryId ms seq) =
@@ -85,7 +90,7 @@ newtype Streams n a = Streams (HM.HashMap n (Stream a))
 
 data MemoryStoreValue = MSStringVal BS.ByteString
                       | MSListVal [BS.ByteString]
-                      | MSStreams (Streams BS.ByteString (M.Map BS.ByteString BS.ByteString))
+                      | MSStreams (Streams BS.ByteString [(BS.ByteString, BS.ByteString)])
                       deriving (Eq, Show)
 
 newtype BLPopWaiter = BLPopWaiter T.ClientID deriving (Eq, Show)

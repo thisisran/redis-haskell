@@ -7,6 +7,7 @@ module Utilities
   , bsToDouble
   , nowNs
   , hasElapsedSince
+  , rangeInclusive
   ) where
 
 import Control.Monad (guard)
@@ -14,12 +15,12 @@ import Data.Char (toLower)
 
 import Text.Read (readMaybe)
 
+import qualified Data.Map.Strict as M
+
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 
--- import System.Clock (getTime, toNanoSecs, Clock (Monotonic))
 import Data.Time.Clock.POSIX (getPOSIXTime)
-
 
 bsToLower :: BS.ByteString -> BS.ByteString
 bsToLower = BS8.map toLower
@@ -41,10 +42,13 @@ bsToDouble = readMaybe . BS8.unpack
 
 nowNs :: IO Integer
 nowNs = fmap (floor . (* 1000)) getPOSIXTime
--- nowNs = toNanoSecs <$> getTime Monotonic
 
--- example
 hasElapsedSince :: Integer -> Integer -> IO Bool
 hasElapsedSince thresholdMs startNs = do
   endNs <- nowNs
   pure (endNs - startNs >= thresholdMs)
+
+rangeInclusive :: Ord k => k -> k -> M.Map k v -> M.Map k v
+rangeInclusive lo hi m
+  | lo > hi   = M.empty
+  | otherwise = M.takeWhileAntitone (<= hi) $ M.dropWhileAntitone (< lo) m

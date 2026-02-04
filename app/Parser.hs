@@ -20,7 +20,7 @@ import Data.Maybe (fromMaybe)
 import Data.Void (Void)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import Text.Megaparsec (Parsec, takeP, (<?>), eof, parse, errorBundlePretty, (<|>))
+import Text.Megaparsec (Parsec, takeP, (<?>), eof, parse, errorBundlePretty, (<|>), try)
 import Text.Megaparsec.Stream (VisualStream, TraversableStream)
 import Text.Megaparsec.Error (ShowErrorComponent, ParseErrorBundle)
 
@@ -51,6 +51,7 @@ data Command
   | BLPop BS.ByteString Double
   | Type BS.ByteString
   | XAdd BS.ByteString MS.EntryId [(BS.ByteString, BS.ByteString)]
+  | XRange BS.ByteString MS.RangeEntryId MS.RangeEntryId
   deriving (Show, Eq)
 
 parseBulkString :: Parser BS.ByteString
@@ -94,6 +95,7 @@ specs =
   , CommandSpec ["BLPOP"] parseBLPOP
   , CommandSpec ["TYPE"] parseTYPE
   , CommandSpec ["XADD"] parseXADD
+  , CommandSpec ["XRANGE"] parseXRANGE
   ]
 
 lookupSpec :: BS.ByteString -> [CommandSpec] -> Maybe CommandSpec
@@ -254,3 +256,28 @@ parseEntryId = do
       void (B.char 42) -- *
       B.crlf
       pure (MS.EntryGenSeq p)
+
+parseXRANGE :: Int -> Parser Command
+parseXRANGE n = do
+  expectMinArity 4 n
+  key <- parseBulkString
+  start <- try parseFull <|> parseMili
+  end <- try parseFull <|> parseMili
+  pure (XRange key start end)
+  where
+    parseFull = do
+      void (B.char 36)
+      L.decimal
+      B.crlf
+      mili <- L.decimal
+      void (B.char 45)
+      seq <- L.decimal
+      B.crlf
+      pure (MS.RangeEntryId mili seq)
+    parseMili = do
+      void (B.char 36)
+      L.decimal
+      B.crlf
+      mili <- L.decimal
+      B.crlf
+      pure (MS.RangeMili mili)
