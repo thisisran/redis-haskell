@@ -253,23 +253,47 @@ xrangeCommand socket store key mili@(RangeEntryId _ _) seq@(RangeEntryId _ _) = 
   resp <- xrangeHelper store key (<) mili seq
   send socket resp
 
-xreadCommand :: Socket -> MemoryStore -> [(BS.ByteString, RangeEntryId)] -> IO ()
-xreadCommand socket store keysIds = do
-  result <- go keysIds BS.empty
+xreadEntriesAvailable :: MemoryStore -> [(BS.ByteString, RangeEntryId)] -> IO Bool
+xreadEntriesAvailable store keyIds = do
+  foldr go (pure False) keyIds
+  where
+    go :: (BS.ByteString, RangeEntryId) -> IO Bool -> IO Bool
+    go (key, RangeEntryId startMili startSeq) a = do
+      acc <- a
+      res <- xrangeEndHelper store key (\_ _ -> True)
+      case res of
+        Nothing -> pure False
+        Just (RangeEntryId endMili endSeq) -> do
+          (_, Stream oldStream, _) <- getStream store key (const Nothing . M.filterWithKey (\_ _ -> True))
+          let allKeysValues = U.range (<=) (EntryId startMili startSeq) (EntryId endMili endSeq) oldStream
+          if null allKeysValues then pure False else pure True
+
+-- If there are already entries with IDs greater than the specified ID
+xreadCommand :: Socket -> MemoryStore -> [(BS.ByteString, RangeEntryId)] -> Maybe Double -> IO ()
+xreadCommand socket store keysIds (Just timeout) = go 0
+  where go elapsed = do
+           hasEntries <- xreadEntriesAvailable store keysIds
+           if hasEntries
+           then xreadCommand socket store keysIds Nothing
+           else if elapsed > (timeout / 1_000) && timeout > 0
+                then send socket encodeNullArray
+                else do
+                  threadDelay 1_000
+                  go $ elapsed + 0.001
+      
+xreadCommand socket store keysIds Nothing = do
+  result <- go keysIds BS.empty 0
   send socket $ "*" <> (BS8.pack . show . length) keysIds <> "\r\n" <> result
   where
-    go :: [(BS.ByteString, RangeEntryId)] -> BS.ByteString -> IO BS.ByteString
-    go [] acc = pure acc
-    go ((stream_id, entry_id): xs) acc = do
+    go :: [(BS.ByteString, RangeEntryId)] -> BS.ByteString -> Double -> IO BS.ByteString
+    go [] acc elapsed = pure acc
+    go ((stream_id, entry_id): xs) acc elapsed = do
       res <- xrangeEndHelper store stream_id (\_ _ -> True)
       case res of
         Nothing -> pure encodeNullArray
         Just seq -> do
           streamResp <- xrangeHelper store stream_id (<=) entry_id seq
-          go xs (acc <> "*2\r\n" <> encodeBulkString stream_id <> streamResp)
-
-      -- streamResp <- xrangeHelper store stream_id (<=) entry_id RangeMinusPlus
-      -- go xs (acc <> "*2\r\n" <> encodeBulkString stream_id <> streamResp)
+          go xs (acc <> "*2\r\n" <> encodeBulkString stream_id <> streamResp) elapsed
 
 main :: IO ()
 main = do
@@ -310,7 +334,7 @@ main = do
               Right (Type key) -> typeCommand socket store key >> loop
               Right (XAdd streamID entryID values) -> xaddCommand socket store streamID entryID values >> loop
               Right (XRange key start end) -> xrangeCommand socket store key start end >> loop
-              Right (XRead keysIds) -> xreadCommand socket store keysIds >> loop
+              Right (XRead keysIds timeout) -> xreadCommand socket store keysIds timeout >> loop
               Left e -> hPutStrLn stderr (prettifyErrors e) >> loop
 
     loop

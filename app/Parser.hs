@@ -16,11 +16,11 @@ import Control.Monad (unless, void)
 import Data.Char (toUpper)
 import Data.Function (on)
 import Data.List (find)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Void (Void)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import Text.Megaparsec (Parsec, takeP, (<?>), eof, parse, errorBundlePretty, (<|>), try)
+import Text.Megaparsec (Parsec, takeP, (<?>), parse, errorBundlePretty, (<|>), try)
 import Text.Megaparsec.Stream (VisualStream, TraversableStream)
 import Text.Megaparsec.Error (ShowErrorComponent, ParseErrorBundle)
 import Text.Megaparsec.Char (string)
@@ -53,7 +53,7 @@ data Command
   | Type BS.ByteString
   | XAdd BS.ByteString MS.EntryId [(BS.ByteString, BS.ByteString)]
   | XRange BS.ByteString MS.RangeEntryId MS.RangeEntryId
-  | XRead [(BS.ByteString, MS.RangeEntryId)]
+  | XRead [(BS.ByteString, MS.RangeEntryId)] (Maybe Double)
   deriving (Show, Eq)
 
 parseBulkString :: Parser BS.ByteString
@@ -314,10 +314,24 @@ countStartRange k
   | k <= 0    = pure []
   | otherwise = sequenceA (replicate k parseStartRange)
 
+parseBulkStringStart :: Parser BS.ByteString
+parseBulkStringStart = do
+  void (B.char 36) -- '$'
+  L.decimal
+  B.crlf
+
+parseBlockKeyword :: Parser (Maybe Double)
+parseBlockKeyword = do
+  try (void parseBulkStringStart >> (B.string' "block" >> B.crlf >> void parseBulkStringStart >> (Just <$> L.decimal) <* B.crlf)) <|> pure Nothing
+
 parseXREAD :: Int -> Parser Command
 parseXREAD n = do
   expectMinArity 4 n
-  streamsKeyWord <- parseBulkString
-  keys <- countBulk $ (n - 2) `div` 2
-  ids <- countStartRange $ (n - 2) `div` 2
-  pure (XRead $ zip keys ids)
+  timeout <- parseBlockKeyword
+  let count = if isNothing timeout then 2 else 4
+  void parseBulkStringStart
+  B.string' "streams"
+  B.crlf
+  keys <- countBulk $ (n - count) `div` 2
+  ids <- countStartRange $ (n - count) `div` 2
+  pure (XRead (zip keys ids) timeout)
