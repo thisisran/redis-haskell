@@ -23,6 +23,7 @@ import qualified Data.ByteString.Char8 as BSC
 import Text.Megaparsec (Parsec, takeP, (<?>), eof, parse, errorBundlePretty, (<|>), try)
 import Text.Megaparsec.Stream (VisualStream, TraversableStream)
 import Text.Megaparsec.Error (ShowErrorComponent, ParseErrorBundle)
+import Text.Megaparsec.Char (string)
 
 import qualified Text.Megaparsec.Byte as B
 import qualified Text.Megaparsec as M
@@ -52,6 +53,7 @@ data Command
   | Type BS.ByteString
   | XAdd BS.ByteString MS.EntryId [(BS.ByteString, BS.ByteString)]
   | XRange BS.ByteString MS.RangeEntryId MS.RangeEntryId
+  | XRead [(BS.ByteString, MS.RangeEntryId)]
   deriving (Show, Eq)
 
 parseBulkString :: Parser BS.ByteString
@@ -96,13 +98,14 @@ specs =
   , CommandSpec ["TYPE"] parseTYPE
   , CommandSpec ["XADD"] parseXADD
   , CommandSpec ["XRANGE"] parseXRANGE
+  , CommandSpec ["XREAD"] parseXREAD
   ]
 
 lookupSpec :: BS.ByteString -> [CommandSpec] -> Maybe CommandSpec
 lookupSpec cmd = find (\s -> any (ciEq cmd) (names s))
 
 ciEq :: BS.ByteString -> BS.ByteString -> Bool
-ciEq = (==) `on` (BSC.map toUpper)
+ciEq = (==) `on` BSC.map toUpper
 
 expectArity :: [Int] -> Int -> Parser ()
 expectArity allowed n =
@@ -257,41 +260,64 @@ parseEntryId = do
       B.crlf
       pure (MS.EntryGenSeq p)
 
+parseFullRange :: Parser MS.RangeEntryId
+parseFullRange = do
+  void (B.char 36)
+  L.decimal
+  B.crlf
+  mili <- L.decimal
+  void (B.char 45)
+  seq <- L.decimal
+  B.crlf
+  pure (MS.RangeEntryId mili seq)
+
+parseMiliRange :: Parser MS.RangeEntryId
+parseMiliRange = do
+  void (B.char 36)
+  L.decimal
+  B.crlf
+  mili <- L.decimal
+  B.crlf
+  pure (MS.RangeMili mili)
+
+parseMinusMiliRange :: Parser MS.RangeEntryId
+parseMinusMiliRange = do
+  void (B.char 36)
+  L.decimal
+  B.crlf
+  void (B.char 45)
+  B.crlf
+  pure MS.RangeMinusPlus
+
+parsePlusSeqRange :: Parser MS.RangeEntryId
+parsePlusSeqRange = do
+  void (B.char 36)
+  L.decimal
+  B.crlf
+  void (B.char 43)
+  B.crlf
+  pure MS.RangeMinusPlus
+
+parseStartRange :: Parser MS.RangeEntryId
+parseStartRange = try parseFullRange <|> try parseMiliRange <|> parseMinusMiliRange
+
+parseEndRange :: Parser MS.RangeEntryId
+parseEndRange = try parseFullRange <|> try parseMiliRange <|> parsePlusSeqRange
+
 parseXRANGE :: Int -> Parser Command
 parseXRANGE n = do
   expectMinArity 4 n
-  key <- parseBulkString
-  start <- try parseFull <|> try parseMili <|> parseMinusMili
-  end <- try parseFull <|> try parseMili <|> parsePlusSeq
-  pure (XRange key start end)
-  where
-    parseFull = do
-      void (B.char 36)
-      L.decimal
-      B.crlf
-      mili <- L.decimal
-      void (B.char 45)
-      seq <- L.decimal
-      B.crlf
-      pure (MS.RangeEntryId mili seq)
-    parseMili = do
-      void (B.char 36)
-      L.decimal
-      B.crlf
-      mili <- L.decimal
-      B.crlf
-      pure (MS.RangeMili mili)
-    parseMinusMili = do
-      void (B.char 36)
-      L.decimal
-      B.crlf
-      void (B.char 45)
-      B.crlf
-      pure MS.RangeMinusPlus
-    parsePlusSeq = do
-      void (B.char 36)
-      L.decimal
-      B.crlf
-      void (B.char 43)
-      B.crlf
-      pure MS.RangeMinusPlus
+  XRange <$> parseBulkString <*> parseStartRange <*> parseEndRange
+
+countStartRange :: Int -> Parser [MS.RangeEntryId]
+countStartRange k
+  | k <= 0    = pure []
+  | otherwise = sequenceA (replicate k parseStartRange)
+
+parseXREAD :: Int -> Parser Command
+parseXREAD n = do
+  expectMinArity 4 n
+  streamsKeyWord <- parseBulkString
+  keys <- countBulk $ (n - 2) `div` 2
+  ids <- countStartRange $ (n - 2) `div` 2
+  pure (XRead $ zip keys ids)

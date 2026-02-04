@@ -7,7 +7,7 @@ module Utilities
   , bsToDouble
   , nowNs
   , hasElapsedSince
-  , rangeInclusive
+  , range
   ) where
 
 import Control.Monad (guard)
@@ -48,7 +48,7 @@ hasElapsedSince thresholdMs startNs = do
   endNs <- nowNs
   pure (endNs - startNs >= thresholdMs)
 
-rangeInclusive :: Ord k => k -> k -> M.Map k v -> M.Map k v
-rangeInclusive lo hi m
+range :: Ord k => (k -> k -> Bool) -> k -> k -> M.Map k v -> M.Map k v
+range f lo hi m
   | lo > hi   = M.empty
-  | otherwise = M.takeWhileAntitone (<= hi) $ M.dropWhileAntitone (< lo) m
+  | otherwise = M.takeWhileAntitone (<= hi) $ M.dropWhileAntitone (`f` lo) m

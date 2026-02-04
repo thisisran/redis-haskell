@@ -165,122 +165,111 @@ typeCommand socket store key = do
     Just (MemoryStoreEntry (MSStringVal _) _) -> send socket $ encodeSimpleString "string"
     Just (MemoryStoreEntry (MSListVal _) _) -> send socket $ encodeSimpleString "list"
 
-xaddCommand :: Socket -> MemoryStore -> BS.ByteString -> EntryId -> [(BS.ByteString, BS.ByteString)] -> IO ()
-xaddCommand socket store streamID (EntryId 0 0) values = send socket (encodeSimpleError "The ID specified in XADD must be greater than 0-0")
-xaddCommand socket store streamID (EntryGenSeq mili) values = do
-  mayStreams <- getMemoryDataStreams store
-  case mayStreams of
-    Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
-    _ -> handleStreams (Streams HM.empty)
-  where
-    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
-    handleStreams (Streams streams) = do
-      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
-      let filtered = M.filterWithKey (\(EntryId m _) _ -> m == mili) oldStream
-      case M.lookupMax filtered of
-        Nothing -> do
-          let seq = if mili == 0 then 1 else 0
-          xaddCommand socket store streamID (EntryId mili seq) values
-        Just (EntryId m v, _) -> xaddCommand socket store streamID (EntryId mili (v + 1)) values
-xaddCommand socket store streamID EntryGenNew values = do
-  now <- U.nowNs
-  xaddCommand socket store streamID (EntryGenSeq (fromIntegral now)) values
-xaddCommand socket store streamID entryID@(EntryId mili seq) values = do
-  mayStreams <- getMemoryDataStreams store
-  case mayStreams of
-    Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
-    _ -> handleStreams (Streams HM.empty)
-  where
-    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
-    handleStreams (Streams streams) = do
-      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
-      case M.lookupMax oldStream of
-        Nothing -> addNewEntry oldStream
-        Just (x, _) ->
-          if x >= entryID
-            then send socket $ encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item"
-            else addNewEntry oldStream
-      where
-        addNewEntry :: M.Map EntryId [(BS.ByteString, BS.ByteString)] -> IO ()
-        addNewEntry oldStream = do
-          let newEntry = values
-          let newStream = Stream (M.insert entryID newEntry oldStream)
-          let newStreams = HM.insert streamID newStream streams
-          setMemoryDataStreams store (MemoryStoreEntry (MSStreams (Streams newStreams)) Nothing)
-          send socket $ encodeBulkString (entryIdToBS entryID)
+-- xrange ::  (M.Map k a -> Maybe (k, a)) -> ((k -> a -> Bool) -> M.Map k a) -> M.Map k a
 
-xrangeEndHelper :: MemoryStore -> BS.ByteString -> Word64 -> IO (Maybe Word64)
-xrangeEndHelper store key mili = do
-  mayStreams <- getMemoryDataStreams store
-  case mayStreams of
+getStream :: MemoryStore -> BS.ByteString ->
+              (M.Map EntryId RedisStreamValues -> Maybe (EntryId, RedisStreamValues)) ->
+              IO (Maybe (EntryId, RedisStreamValues), RedisStream, RedisStreams)
+getStream store streamID filter = do
+  maybeStreams <- getMemoryDataStreams store
+  case maybeStreams of
     Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
-    _ -> handleStreams (Streams HM.empty)
+    _                                                -> handleStreams (Streams HM.empty)
   where
-    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO (Maybe Word64)
-    handleStreams (Streams streams) = do
-      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup key streams)
-      let filtered = M.filterWithKey (\(EntryId m _) _ -> m == mili) oldStream
-      case M.lookupMax filtered of
-        Nothing -> pure Nothing
-        Just (EntryId m v, _) -> pure (Just $ v + 1)
+    handleStreams :: RedisStreams -> IO (Maybe (EntryId, RedisStreamValues), RedisStream, RedisStreams)
+    handleStreams s@(Streams streams) = do
+      let os@(Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
+      pure (filter oldStream, os, s)
+
+xaddCommand :: Socket -> MemoryStore -> BS.ByteString -> EntryId -> RedisStreamValues -> IO ()
+xaddCommand socket store streamID (EntryId 0 0) values = send socket (encodeSimpleError "The ID specified in XADD must be greater than 0-0")
+xaddCommand socket store streamID EntryGenNew values = U.nowNs >>= \now -> xaddCommand socket store streamID (EntryGenSeq (fromIntegral now)) values
+xaddCommand socket store streamID (EntryGenSeq mili) values = do
+  (filteredStream, _, streams) <- getStream store streamID (M.lookupMax . M.filterWithKey (\(EntryId m _) _ -> m == mili))
+  case filteredStream of
+    Nothing -> xaddCommand socket store streamID (EntryId mili (if mili == 0 then 1 else 0)) values
+    Just (EntryId m v, _) -> xaddCommand socket store streamID (EntryId mili (v + 1)) values
+xaddCommand socket store streamID entryID@(EntryId mili seq) values = do
+  (filteredStream, Stream oldStream, streams) <- getStream store streamID (M.lookupMax . M.filterWithKey (\_ _ -> True))
+  case filteredStream of
+    Nothing -> addNewEntry M.empty streams
+    Just (x, _) -> if x >= entryID
+                   then send socket $ encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item"
+                   else addNewEntry oldStream streams
+    where
+      addNewEntry :: M.Map EntryId RedisStreamValues -> RedisStreams -> IO ()
+      addNewEntry oldStream (Streams streams) = do
+        let newEntry = values
+        let newStream = Stream (M.insert entryID newEntry oldStream)
+        let newStreams = HM.insert streamID newStream streams
+        setMemoryDataStreams store (MemoryStoreEntry (MSStreams (Streams newStreams)) Nothing)
+        send socket $ encodeBulkString (entryIdToBS entryID)
+
+xrangeEndHelper :: MemoryStore -> BS.ByteString -> (EntryId -> RedisStreamValues -> Bool) -> IO (Maybe RangeEntryId)
+xrangeEndHelper store key f = do
+  (filteredStream, _, streams) <- getStream store key (M.lookupMax . M.filterWithKey f)
+  case filteredStream of
+    Nothing -> pure Nothing
+    Just (EntryId m v, _) -> pure $ Just (RangeEntryId m v)
+
+xrangeHelper :: MemoryStore -> BS.ByteString -> (EntryId -> EntryId -> Bool) -> RangeEntryId -> RangeEntryId -> IO BS.ByteString
+xrangeHelper store key rangef (RangeEntryId mili1 mili2) (RangeEntryId seq1 seq2) = do
+  (_, Stream oldStream, _) <- getStream store key (const Nothing . M.filterWithKey (\_ _ -> True))
+  -- putStrLn $ show ((M.takeWhileAntitone (<= (EntryId 1526985054079 0)) $ M.dropWhileAntitone ((<=) (EntryId 1526985054069 0)) oldStream))
+  let allKeysValues = M.toAscList (U.range rangef (EntryId mili1 mili2) (EntryId seq1 seq2) oldStream)
+  let resp = parseKeysValues allKeysValues
+  pure resp
+  where
+    parseKeysValues :: [(EntryId, RedisStreamValues)] -> BS.ByteString
+    parseKeysValues keysValues = "*" <> (BS8.pack . show . length) keysValues <> "\r\n" <>
+                                 foldr (\(id, valuesMap) acc -> "*2\r\n" <> encodeBulkString (entryIdToBS id) <> convertMap valuesMap <> acc) BS.empty keysValues
+    convertMap :: RedisStreamValues -> BS.ByteString
+    convertMap l = "*" <> (BS8.pack . show . (* 2) . length) l <> "\r\n" <>
+                   foldr (\(k, v) acc -> encodeBulkString k <> encodeBulkString v <> acc) BS.empty l
 
 xrangeCommand :: Socket -> MemoryStore -> BS.ByteString -> RangeEntryId -> RangeEntryId -> IO ()
 xrangeCommand socket store key mili RangeMinusPlus = do
-  mayStreams <- getMemoryDataStreams store
-  case mayStreams of
-    Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
-    _ -> handleStreams (Streams HM.empty)
-  where
-    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
-    handleStreams (Streams streams) = do
-      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup key streams)
-      case M.lookupMax oldStream of
-        Nothing -> send socket encodeNullArray
-        Just (EntryId m v, _) -> xrangeCommand socket store key mili (RangeEntryId m v)
-
+  res <- xrangeEndHelper store key (\_ _ -> True)
+  case res of
+    Nothing -> send socket encodeNullArray
+    Just seq -> xrangeCommand socket store key mili seq
 xrangeCommand socket store key RangeMinusPlus seq = do
-  mayStreams <- getMemoryDataStreams store
-  case mayStreams of
-    Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
-    _ -> handleStreams (Streams HM.empty)
-  where
-    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
-    handleStreams (Streams streams) = do
-      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup key streams)
-      case M.lookupMin oldStream of
-        Nothing -> send socket encodeNullArray
-        Just (EntryId m v, _) -> xrangeCommand socket store key (RangeEntryId m v) seq
-  
+  (filteredStream, Stream oldStream, streams) <- getStream store key (M.lookupMin . M.filterWithKey (\_ _ -> True))
+  case filteredStream of
+    Nothing -> send socket encodeNullArray
+    Just (EntryId m v, _) -> xrangeCommand socket store key (RangeEntryId m v) seq
 xrangeCommand socket store key (RangeMili mili) seq@(RangeEntryId seq1 seq2) = xrangeCommand socket store key (RangeEntryId mili 0) seq
-xrangeCommand socket store key mili@(RangeEntryId mili1 mili2) (RangeMili seqMili) = do
-  res <- xrangeEndHelper store key seqMili
+xrangeCommand socket store key mili@(RangeEntryId _ _) (RangeMili seq) = do
+  res <- xrangeEndHelper store key (\(EntryId m _) _ -> m == seq)
   case res of
-    Nothing -> send socket $ encodeSimpleError "The end id does not exist"
-    Just newEnd -> xrangeCommand socket store key mili (RangeEntryId seqMili newEnd)
+    Nothing -> send socket $ encodeSimpleError "XRANGE: The end id does not exist"
+    Just (RangeEntryId _ newEnd) -> xrangeCommand socket store key mili (RangeEntryId seq newEnd)
 xrangeCommand socket store key (RangeMili mili) (RangeMili seq) = do
-  res <- xrangeEndHelper store key seq
+  res <- xrangeEndHelper store key (\(EntryId m _) _ -> m == seq)
   case res of
-    Nothing -> send socket $ encodeSimpleError "The end id does not exist"
-    Just newEnd -> xrangeCommand socket store key (RangeEntryId mili 0) (RangeEntryId seq newEnd)
-xrangeCommand socket store key (RangeEntryId mili1 mili2) (RangeEntryId seq1 seq2) = do
-  mayStreams <- getMemoryDataStreams store
-  case mayStreams of
-    Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
-    _ -> handleStreams (Streams HM.empty)
+    Nothing -> send socket $ encodeSimpleError "XRANGE: The end id does not exist"
+    Just (RangeEntryId _ newEnd) -> xrangeCommand socket store key (RangeEntryId mili 0) (RangeEntryId seq newEnd)
+xrangeCommand socket store key mili@(RangeEntryId _ _) seq@(RangeEntryId _ _) = do
+  resp <- xrangeHelper store key (<) mili seq
+  send socket resp
+
+xreadCommand :: Socket -> MemoryStore -> [(BS.ByteString, RangeEntryId)] -> IO ()
+xreadCommand socket store keysIds = do
+  result <- go keysIds BS.empty
+  send socket $ "*" <> (BS8.pack . show . length) keysIds <> "\r\n" <> result
   where
-    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
-    handleStreams (Streams streams) = do
-      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup key streams)
-      let allKeysValues = M.toAscList (U.rangeInclusive (EntryId mili1 mili2) (EntryId seq1 seq2) oldStream)
-      let resp = parseKeysValues allKeysValues
-      send socket resp
-      where
-        parseKeysValues :: [(EntryId, [(BS.ByteString, BS.ByteString)])] -> BS.ByteString
-        parseKeysValues keysValues = "*" <> (BS8.pack . show . length) keysValues <> "\r\n" <>
-                                     foldr (\(id, valuesMap) acc -> "*2\r\n" <> encodeBulkString (entryIdToBS id) <> convertMap valuesMap <> acc) BS.empty keysValues
-        convertMap :: [(BS.ByteString, BS.ByteString)] -> BS.ByteString
-        convertMap l = "*" <> (BS8.pack . show . (* 2) . length) l <> "\r\n" <>
-                                     foldr (\(k, v) acc -> encodeBulkString k <> encodeBulkString v <> acc) BS.empty l
+    go :: [(BS.ByteString, RangeEntryId)] -> BS.ByteString -> IO BS.ByteString
+    go [] acc = pure acc
+    go ((stream_id, entry_id): xs) acc = do
+      res <- xrangeEndHelper store stream_id (\_ _ -> True)
+      case res of
+        Nothing -> pure encodeNullArray
+        Just seq -> do
+          streamResp <- xrangeHelper store stream_id (<=) entry_id seq
+          go xs (acc <> "*2\r\n" <> encodeBulkString stream_id <> streamResp)
+
+      -- streamResp <- xrangeHelper store stream_id (<=) entry_id RangeMinusPlus
+      -- go xs (acc <> "*2\r\n" <> encodeBulkString stream_id <> streamResp)
 
 main :: IO ()
 main = do
@@ -321,6 +310,7 @@ main = do
               Right (Type key) -> typeCommand socket store key >> loop
               Right (XAdd streamID entryID values) -> xaddCommand socket store streamID entryID values >> loop
               Right (XRange key start end) -> xrangeCommand socket store key start end >> loop
+              Right (XRead keysIds) -> xreadCommand socket store keysIds >> loop
               Left e -> hPutStrLn stderr (prettifyErrors e) >> loop
 
     loop

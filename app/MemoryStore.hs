@@ -20,6 +20,10 @@ module MemoryStore
   , Stream (..)
   , Streams (..)
   , RangeEntryId (..)
+  , RedisStreams
+  , RedisStream
+  , RedisStreamValue
+  , RedisStreamValues
   ) where
 
 import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar')
@@ -75,6 +79,11 @@ newtype Stream a    = Stream (M.Map EntryId a)
                       deriving (Eq, Show)
 newtype Streams n a = Streams (HM.HashMap n (Stream a))
                       deriving (Eq, Show)
+
+type RedisStreamValue = (BS.ByteString, BS.ByteString)
+type RedisStreamValues = [RedisStreamValue]
+type RedisStreams = Streams BS.ByteString RedisStreamValues
+type RedisStream = Stream RedisStreamValues
 
 -- readAfter :: EntryId -> Stream a -> [(EntryId, a)]
 -- readAfter sid (Stream stream) = (M.toAscList . snd . M.split sid) stream
