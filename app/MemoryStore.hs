@@ -43,7 +43,7 @@ data EntryId = EntryId !Word64 !Word64
              | EntryGenNew
              deriving (Eq, Ord, Show)
 
-data RangeEntryId = RangeMinusMili
+data RangeEntryId = RangeMinusPlus
                   | RangeMili !Word64
                   | RangeEntryId !Word64 !Word64
                   deriving (Eq, Show)

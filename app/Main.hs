@@ -225,7 +225,20 @@ xrangeEndHelper store key mili = do
         Just (EntryId m v, _) -> pure (Just $ v + 1)
 
 xrangeCommand :: Socket -> MemoryStore -> BS.ByteString -> RangeEntryId -> RangeEntryId -> IO ()
-xrangeCommand socket store key RangeMinusMili seq = do
+xrangeCommand socket store key mili RangeMinusPlus = do
+  mayStreams <- getMemoryDataStreams store
+  case mayStreams of
+    Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
+    _ -> handleStreams (Streams HM.empty)
+  where
+    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
+    handleStreams (Streams streams) = do
+      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup key streams)
+      case M.lookupMax oldStream of
+        Nothing -> send socket encodeNullArray
+        Just (EntryId m v, _) -> xrangeCommand socket store key mili (RangeEntryId m v)
+
+xrangeCommand socket store key RangeMinusPlus seq = do
   mayStreams <- getMemoryDataStreams store
   case mayStreams of
     Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams

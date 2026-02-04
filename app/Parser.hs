@@ -262,7 +262,7 @@ parseXRANGE n = do
   expectMinArity 4 n
   key <- parseBulkString
   start <- try parseFull <|> try parseMili <|> parseMinusMili
-  end <- try parseFull <|> parseMili
+  end <- try parseFull <|> try parseMili <|> parsePlusSeq
   pure (XRange key start end)
   where
     parseFull = do
@@ -287,4 +287,11 @@ parseXRANGE n = do
       B.crlf
       void (B.char 45)
       B.crlf
-      pure MS.RangeMinusMili
+      pure MS.RangeMinusPlus
+    parsePlusSeq = do
+      void (B.char 36)
+      L.decimal
+      B.crlf
+      void (B.char 43)
+      B.crlf
+      pure MS.RangeMinusPlus
