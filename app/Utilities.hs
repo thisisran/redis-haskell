@@ -15,7 +15,7 @@ import Data.Char (toLower)
 
 import Text.Read (readMaybe)
 
-import qualified Data.Map.Strict as M
+import qualified Data.Map.Strict     as M
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8

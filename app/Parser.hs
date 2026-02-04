@@ -238,9 +238,7 @@ prettifyErrors = errorBundlePretty
 
 parseEntryId :: Parser MS.EntryId
 parseEntryId = do
-  void (B.char 36) -- '$'
-  L.decimal
-  B.crlf
+  void parseBulkStringStart
   parseAuto <|> (parseMili >>= (\pre -> fullSeq pre <|> missingSeq pre))
   where
     parseAuto = do
@@ -262,44 +260,43 @@ parseEntryId = do
 
 parseFullRange :: Parser MS.RangeEntryId
 parseFullRange = do
-  void (B.char 36)
-  L.decimal
-  B.crlf
+  void parseBulkStringStart
   mili <- L.decimal
   void (B.char 45)
   seq <- L.decimal
   B.crlf
-  pure (MS.RangeEntryId mili seq)
+  pure $ MS.RangeEntryId mili seq
 
 parseMiliRange :: Parser MS.RangeEntryId
 parseMiliRange = do
-  void (B.char 36)
-  L.decimal
-  B.crlf
+  void parseBulkStringStart
   mili <- L.decimal
   B.crlf
-  pure (MS.RangeMili mili)
+  pure $ MS.RangeMili mili
 
 parseMinusMiliRange :: Parser MS.RangeEntryId
 parseMinusMiliRange = do
-  void (B.char 36)
-  L.decimal
-  B.crlf
+  void parseBulkStringStart
   void (B.char 45)
   B.crlf
   pure MS.RangeMinusPlus
 
 parsePlusSeqRange :: Parser MS.RangeEntryId
 parsePlusSeqRange = do
-  void (B.char 36)
-  L.decimal
-  B.crlf
+  void parseBulkStringStart
   void (B.char 43)
   B.crlf
   pure MS.RangeMinusPlus
 
+parseDollarSign :: Parser MS.RangeEntryId
+parseDollarSign = do
+  void parseBulkStringStart
+  void (B.char 36)
+  B.crlf
+  pure MS.RangeDollar
+
 parseStartRange :: Parser MS.RangeEntryId
-parseStartRange = try parseFullRange <|> try parseMiliRange <|> parseMinusMiliRange
+parseStartRange = try (try parseFullRange <|> try parseMiliRange <|> parseMinusMiliRange) <|> parseDollarSign
 
 parseEndRange :: Parser MS.RangeEntryId
 parseEndRange = try parseFullRange <|> try parseMiliRange <|> parsePlusSeqRange

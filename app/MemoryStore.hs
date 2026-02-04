@@ -48,6 +48,7 @@ data EntryId = EntryId !Word64 !Word64
              deriving (Eq, Ord, Show)
 
 data RangeEntryId = RangeMinusPlus
+                  | RangeDollar
                   | RangeMili !Word64
                   | RangeEntryId !Word64 !Word64
                   deriving (Eq, Show)
