@@ -6,13 +6,13 @@ module Main (main) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
-import Data.Maybe (fromMaybe)
-import Data.Word (Word64)
-import qualified Data.HashMap.Strict as HM
-import qualified Data.Map.Strict as M
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
-import Encode (encodeArray, encodeBulkString, encodeInteger, encodeNullArray, encodeNullBulkString, encodeSimpleString, encodeSimpleError)
+import qualified Data.HashMap.Strict as HM
+import qualified Data.Map.Strict as M
+import Data.Maybe (fromMaybe)
+import Data.Word (Word64)
+import Encode (encodeArray, encodeBulkString, encodeInteger, encodeNullArray, encodeNullBulkString, encodeSimpleError, encodeSimpleString)
 import MemoryStore
 import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve)
 import Parser
@@ -26,9 +26,10 @@ setCommand socket store key val ex = do
   now <- U.nowNs
   setMemoryDataKey store key $ handleExpiry ex now
   send socket $ encodeSimpleString "OK"
-  where handleExpiry Nothing timeRef = MemoryStoreEntry (MSStringVal val) Nothing
-        handleExpiry (Just (EX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (T.ExpireDuration (fromIntegral $ ex * 1_000_000), T.ExpireReference timeRef)
-        handleExpiry (Just (PX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (T.ExpireDuration (fromIntegral ex), T.ExpireReference timeRef)
+  where
+    handleExpiry Nothing timeRef = MemoryStoreEntry (MSStringVal val) Nothing
+    handleExpiry (Just (EX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (T.ExpireDuration (fromIntegral $ ex * 1_000_000), T.ExpireReference timeRef)
+    handleExpiry (Just (PX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (T.ExpireDuration (fromIntegral ex), T.ExpireReference timeRef)
 
 getCommand :: Socket -> MemoryStore -> BS.ByteString -> IO ()
 getCommand socket store key = do
@@ -39,10 +40,10 @@ getCommand socket store key = do
     Just (MemoryStoreEntry (MSStringVal v) (Just (T.ExpireDuration exDur, T.ExpireReference exRef))) -> do
       hasPassed <- U.hasElapsedSince exDur exRef
       if hasPassed
-      then do
-        delMemoryDataKey store key
-        send socket encodeNullBulkString
-      else send socket $ encodeBulkString v
+        then do
+          delMemoryDataKey store key
+          send socket encodeNullBulkString
+        else send socket $ encodeBulkString v
 
 pushCommand :: Socket -> MemoryStore -> BS.ByteString -> [BS.ByteString] -> PushCommand -> IO ()
 pushCommand socket store key values pushType = do
@@ -82,7 +83,7 @@ lrangeCommand socket store key start stop = do
           | index >= 0 = (if index >= itemCount then itemCount - 1 else index)
           | -index > itemCount = 0
           | otherwise = itemCount + index
-          
+
 llenCommand :: Socket -> MemoryStore -> BS.ByteString -> IO ()
 llenCommand socket store key = do
   val <- getMemoryDataVal store key
@@ -101,7 +102,7 @@ lpopHelper socket store key count = do
       where
         go [] socket _ = pure encodeNullBulkString
         go xs socket c = do
-          setMemoryDataKey store key (MemoryStoreEntry (MSListVal (drop c xs))  Nothing)
+          setMemoryDataKey store key (MemoryStoreEntry (MSListVal (drop c xs)) Nothing)
           pure $ getPopped c v
           where
             getPopped 1 (x : _) = encodeBulkString x
@@ -114,47 +115,47 @@ lpopCommand socket store key count = do
 
 blpopCommand :: Socket -> MemoryStore -> BS.ByteString -> Double -> Int -> IO ()
 blpopCommand socket store key timeout clientID = go 0
-    where
-      go elapsed
-        | elapsed > timeout && timeout > 0 = do
-            -- BS8.hPutStrLn stderr $ "ELAPSED:  elapsed: " <> BS8.pack (show elapsed) <> "timeout: " <> BS8.pack (show tout)
-            send socket encodeNullArray
-        | otherwise = do
-            -- BS8.hPutStrLn stderr $ "NOT ELASPED YET elapsed: " <> BS8.pack (show elapsed) <> "timeout: " <> BS8.pack (show timeout)
-            val <- getMemoryDataVal store key
-            case val of
-              Nothing -> do
-                addMemoryWaiter store key clientID
-                waitAndContinue elapsed
-              Just (MemoryStoreEntry (MSListVal []) Nothing) -> do
-                addMemoryWaiter store key clientID
-                waitAndContinue elapsed
-              Just (MemoryStoreEntry (MSListVal (x : xs)) Nothing) -> do
-                waiters <- getMemoryWaitersVal store key
-                case waiters of
-                  Nothing -> do
-                    resp <- lpopHelper socket store key 1  
-                    send socket $ encodeArray False [encodeBulkString key, resp]
-                  Just (BLPopWaiter x : xs) -> do
-                    if x == clientID
-                      then do
-                        resp <- lpopHelper socket store key 1 
-                        send socket $ encodeArray False [encodeBulkString key, resp]
-                        setMemoryWaitersKey store key xs
-                      else do
-                        addMemoryWaiter store key clientID
-                        waitAndContinue elapsed
-      waitAndContinue elapsed = do
-        threadDelay 1_000
-        go $ elapsed + 0.001
+  where
+    go elapsed
+      | elapsed > timeout && timeout > 0 = do
+          -- BS8.hPutStrLn stderr $ "ELAPSED:  elapsed: " <> BS8.pack (show elapsed) <> "timeout: " <> BS8.pack (show tout)
+          send socket encodeNullArray
+      | otherwise = do
+          -- BS8.hPutStrLn stderr $ "NOT ELASPED YET elapsed: " <> BS8.pack (show elapsed) <> "timeout: " <> BS8.pack (show timeout)
+          val <- getMemoryDataVal store key
+          case val of
+            Nothing -> do
+              addMemoryWaiter store key clientID
+              waitAndContinue elapsed
+            Just (MemoryStoreEntry (MSListVal []) Nothing) -> do
+              addMemoryWaiter store key clientID
+              waitAndContinue elapsed
+            Just (MemoryStoreEntry (MSListVal (x : xs)) Nothing) -> do
+              waiters <- getMemoryWaitersVal store key
+              case waiters of
+                Nothing -> do
+                  resp <- lpopHelper socket store key 1
+                  send socket $ encodeArray False [encodeBulkString key, resp]
+                Just (BLPopWaiter x : xs) -> do
+                  if x == clientID
+                    then do
+                      resp <- lpopHelper socket store key 1
+                      send socket $ encodeArray False [encodeBulkString key, resp]
+                      setMemoryWaitersKey store key xs
+                    else do
+                      addMemoryWaiter store key clientID
+                      waitAndContinue elapsed
+    waitAndContinue elapsed = do
+      threadDelay 1_000
+      go $ elapsed + 0.001
 
 typeCommand :: Socket -> MemoryStore -> BS.ByteString -> IO ()
 typeCommand socket store key = do
   val <- getMemoryDataVal store key
   case val of
     Nothing -> do
-      maybeStream <- getMemoryDataStreams store  
-      checkIfStream maybeStream 
+      maybeStream <- getMemoryDataStreams store
+      checkIfStream maybeStream
       where
         checkIfStream (Just (MemoryStoreEntry (MSStreams (Streams streams)) _)) = do
           case HM.lookup key streams of
@@ -170,17 +171,17 @@ xaddCommand socket store streamID (EntryGenSeq mili) values = do
   mayStreams <- getMemoryDataStreams store
   case mayStreams of
     Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
-    _                                                -> handleStreams (Streams HM.empty)
-    where
-      handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
-      handleStreams (Streams streams) = do
-        let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
-        let filtered = M.filterWithKey (\(EntryId m _) _ -> m == mili) oldStream
-        case M.lookupMax filtered of
-          Nothing -> do
-            let seq = if mili == 0 then 1 else 0
-            xaddCommand socket store streamID (EntryId mili seq) values
-          Just (EntryId m v, _) -> xaddCommand socket store streamID (EntryId mili (v+1)) values
+    _ -> handleStreams (Streams HM.empty)
+  where
+    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
+    handleStreams (Streams streams) = do
+      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
+      let filtered = M.filterWithKey (\(EntryId m _) _ -> m == mili) oldStream
+      case M.lookupMax filtered of
+        Nothing -> do
+          let seq = if mili == 0 then 1 else 0
+          xaddCommand socket store streamID (EntryId mili seq) values
+        Just (EntryId m v, _) -> xaddCommand socket store streamID (EntryId mili (v + 1)) values
 xaddCommand socket store streamID EntryGenNew values = do
   now <- U.nowNs
   xaddCommand socket store streamID (EntryGenSeq (fromIntegral now)) values
@@ -188,41 +189,55 @@ xaddCommand socket store streamID entryID@(EntryId mili seq) values = do
   mayStreams <- getMemoryDataStreams store
   case mayStreams of
     Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
-    _                                                -> handleStreams (Streams HM.empty)
-    where
-      handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
-      handleStreams (Streams streams) = do
-        let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
-        case M.lookupMax oldStream of
-          Nothing -> addNewEntry oldStream
-          Just (x, _) -> if x >= entryID
-                         then send socket $ encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item"
-                         else addNewEntry oldStream
-          where
-            addNewEntry :: M.Map EntryId [(BS.ByteString, BS.ByteString)] -> IO ()
-            addNewEntry oldStream = do
-              let newEntry = values
-              let newStream = Stream (M.insert entryID newEntry oldStream)
-              let newStreams = HM.insert streamID newStream streams
-              setMemoryDataStreams store (MemoryStoreEntry (MSStreams (Streams newStreams)) Nothing)
-              send socket $ encodeBulkString (entryIdToBS entryID)
+    _ -> handleStreams (Streams HM.empty)
+  where
+    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
+    handleStreams (Streams streams) = do
+      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
+      case M.lookupMax oldStream of
+        Nothing -> addNewEntry oldStream
+        Just (x, _) ->
+          if x >= entryID
+            then send socket $ encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item"
+            else addNewEntry oldStream
+      where
+        addNewEntry :: M.Map EntryId [(BS.ByteString, BS.ByteString)] -> IO ()
+        addNewEntry oldStream = do
+          let newEntry = values
+          let newStream = Stream (M.insert entryID newEntry oldStream)
+          let newStreams = HM.insert streamID newStream streams
+          setMemoryDataStreams store (MemoryStoreEntry (MSStreams (Streams newStreams)) Nothing)
+          send socket $ encodeBulkString (entryIdToBS entryID)
 
 xrangeEndHelper :: MemoryStore -> BS.ByteString -> Word64 -> IO (Maybe Word64)
 xrangeEndHelper store key mili = do
   mayStreams <- getMemoryDataStreams store
   case mayStreams of
     Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
-    _                                                -> handleStreams (Streams HM.empty)
-    where
-      handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO (Maybe Word64)
-      handleStreams (Streams streams) = do
-        let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup key streams)
-        let filtered = M.filterWithKey (\(EntryId m _) _ -> m == mili) oldStream
-        case M.lookupMax filtered of
-          Nothing -> pure Nothing
-          Just (EntryId m v, _) -> pure (Just $ v + 1)
+    _ -> handleStreams (Streams HM.empty)
+  where
+    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO (Maybe Word64)
+    handleStreams (Streams streams) = do
+      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup key streams)
+      let filtered = M.filterWithKey (\(EntryId m _) _ -> m == mili) oldStream
+      case M.lookupMax filtered of
+        Nothing -> pure Nothing
+        Just (EntryId m v, _) -> pure (Just $ v + 1)
 
 xrangeCommand :: Socket -> MemoryStore -> BS.ByteString -> RangeEntryId -> RangeEntryId -> IO ()
+xrangeCommand socket store key RangeMinusMili seq = do
+  mayStreams <- getMemoryDataStreams store
+  case mayStreams of
+    Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
+    _ -> handleStreams (Streams HM.empty)
+  where
+    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
+    handleStreams (Streams streams) = do
+      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup key streams)
+      case M.lookupMin oldStream of
+        Nothing -> send socket encodeNullArray
+        Just (EntryId m v, _) -> xrangeCommand socket store key (RangeEntryId m v) seq
+  
 xrangeCommand socket store key (RangeMili mili) seq@(RangeEntryId seq1 seq2) = xrangeCommand socket store key (RangeEntryId mili 0) seq
 xrangeCommand socket store key mili@(RangeEntryId mili1 mili2) (RangeMili seqMili) = do
   res <- xrangeEndHelper store key seqMili
@@ -238,38 +253,21 @@ xrangeCommand socket store key (RangeEntryId mili1 mili2) (RangeEntryId seq1 seq
   mayStreams <- getMemoryDataStreams store
   case mayStreams of
     Just (MemoryStoreEntry (MSStreams oldStreams) _) -> handleStreams oldStreams
-    _                                                -> handleStreams (Streams HM.empty)
-    where
-      handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
-      handleStreams (Streams streams) = do
-        let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup key streams)
-        let allKeysValues = M.toAscList (U.rangeInclusive (EntryId mili1 mili2) (EntryId seq1 seq2) oldStream)
-        -- [(EntryId 1526985054069 0,fromList [("humidity","95"),("temperature","36")]),(EntryId 1526985054079 0,fromList [("humidity","94"),("temperature","37")])]
-        let resp = parseKeysValues allKeysValues
-        send socket resp
-        where
-          parseKeysValues :: [(EntryId, [(BS.ByteString, BS.ByteString)])] -> BS.ByteString
-          parseKeysValues keysValues = ("*" <> (BS8.pack . show . length) keysValues <> "\r\n") <> foldr (\(id, valuesMap) acc -> "*2\r\n" <> encodeBulkString (entryIdToBS id) <> convertMap valuesMap <> acc) BS.empty keysValues
-          convertMap :: [(BS.ByteString, BS.ByteString)] -> BS.ByteString
-          convertMap l = "*" <> (BS8.pack . show . (*2) . length) l <> "\r\n" <> foldr (\(k, v) acc -> encodeBulkString k <> encodeBulkString v <> acc) BS.empty l
-        -- [("temp", "36"), ("humidity", "95")]
-        -- [("id", map {"temp": "36", "humidity": "95"}), ("id2", map {"height" : "178"}]
-        -- [["id" ["temp", "36", "humidity", "95"]], ["id2" ["height", "178"]]]
-
--- *2\r\n*2\r\n
--- $15\r\n1526985054069-0\r\n
--- *4\r\n
--- $11\r\ntemperature\r\n
--- $2\r\n36\r\n
--- $8\r\nhumidity\r\n
--- $2\r\n95\r\n
--- *2\r\n
--- $15\r\n1526985054079-0\r\n
--- *4\r\n
--- $11\r\ntemperature\r\n
--- $2\r\n37\r\n
--- $8\r\nhumidity\r\n
--- $2\r\n94\r\n
+    _ -> handleStreams (Streams HM.empty)
+  where
+    handleStreams :: Streams BS.ByteString [(BS.ByteString, BS.ByteString)] -> IO ()
+    handleStreams (Streams streams) = do
+      let (Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup key streams)
+      let allKeysValues = M.toAscList (U.rangeInclusive (EntryId mili1 mili2) (EntryId seq1 seq2) oldStream)
+      let resp = parseKeysValues allKeysValues
+      send socket resp
+      where
+        parseKeysValues :: [(EntryId, [(BS.ByteString, BS.ByteString)])] -> BS.ByteString
+        parseKeysValues keysValues = "*" <> (BS8.pack . show . length) keysValues <> "\r\n" <>
+                                     foldr (\(id, valuesMap) acc -> "*2\r\n" <> encodeBulkString (entryIdToBS id) <> convertMap valuesMap <> acc) BS.empty keysValues
+        convertMap :: [(BS.ByteString, BS.ByteString)] -> BS.ByteString
+        convertMap l = "*" <> (BS8.pack . show . (* 2) . length) l <> "\r\n" <>
+                                     foldr (\(k, v) acc -> encodeBulkString k <> encodeBulkString v <> acc) BS.empty l
 
 main :: IO ()
 main = do

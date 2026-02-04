@@ -261,7 +261,7 @@ parseXRANGE :: Int -> Parser Command
 parseXRANGE n = do
   expectMinArity 4 n
   key <- parseBulkString
-  start <- try parseFull <|> parseMili
+  start <- try parseFull <|> try parseMili <|> parseMinusMili
   end <- try parseFull <|> parseMili
   pure (XRange key start end)
   where
@@ -281,3 +281,10 @@ parseXRANGE n = do
       mili <- L.decimal
       B.crlf
       pure (MS.RangeMili mili)
+    parseMinusMili = do
+      void (B.char 36)
+      L.decimal
+      B.crlf
+      void (B.char 45)
+      B.crlf
+      pure MS.RangeMinusMili
