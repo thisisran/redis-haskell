@@ -313,7 +313,9 @@ incrCommand :: Socket -> MemoryStore -> BS.ByteString -> IO ()
 incrCommand socket store key = do
   val <- getMemoryDataVal store key
   case val of
-    Nothing   -> undefined -- TODO: will be added as one of the next stages
+    Nothing   -> do
+      setMemoryDataKey store key (MemoryStoreEntry (MSStringVal "1") Nothing)
+      send socket $ encodeInteger 1           
     Just (MemoryStoreEntry (MSStringVal v) Nothing) -> case U.bsToInt v of
                                                          Nothing -> undefined
                                                          Just i -> do
