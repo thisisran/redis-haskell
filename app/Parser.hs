@@ -55,6 +55,7 @@ data Command
   | XRange BS.ByteString MS.RangeEntryId MS.RangeEntryId
   | XRead [(BS.ByteString, MS.RangeEntryId)] (Maybe Double)
   | Incr BS.ByteString
+  | Multi
   deriving (Show, Eq)
 
 parseBulkString :: Parser BS.ByteString
@@ -101,6 +102,7 @@ specs =
   , CommandSpec ["XRANGE"] parseXRANGE
   , CommandSpec ["XREAD"] parseXREAD
   , CommandSpec ["INCR"] parseINCR
+  , CommandSpec ["MULTI"] parseMULTI
   ]
 
 lookupSpec :: BS.ByteString -> [CommandSpec] -> Maybe CommandSpec
@@ -339,3 +341,8 @@ parseINCR :: Int -> Parser Command
 parseINCR n = do
   expectArity [2] n
   Incr <$> parseBulkString
+
+parseMULTI :: Int -> Parser Command
+parseMULTI n = do
+  expectArity [1] n
+  pure Multi

@@ -1,5 +1,3 @@
-{-# LANGUAGE NumericUnderscores #-}
-
 module Utilities
   ( bsToLower
   , bsToInteger
@@ -7,18 +5,26 @@ module Utilities
   , bsToDouble
   , nowNs
   , hasElapsedSince
+  , entryIdToBS
   , range
+  , renderParseError
   ) where
 
 import Control.Monad (guard)
 import Data.Char (toLower)
-
+import Text.Megaparsec (errorBundlePretty,  ParseErrorBundle)
 import Text.Read (readMaybe)
 
-import qualified Data.Map.Strict     as M
+import Data.Void (Void)
+
+import qualified Data.Map.Strict as M
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
+import qualified Data.ByteString.Builder as BB
+import qualified Data.ByteString.Lazy as BSL
+
+import MemoryStore (EntryId (..))
 
 import Data.Time.Clock.POSIX (getPOSIXTime)
 
@@ -52,3 +58,15 @@ range :: Ord k => (k -> k -> Bool) -> k -> k -> M.Map k v -> M.Map k v
 range f lo hi m
   | lo > hi   = M.empty
   | otherwise = M.takeWhileAntitone (<= hi) $ M.dropWhileAntitone (`f` lo) m
+
+entryIdToBS :: EntryId -> BS.ByteString
+entryIdToBS (EntryId ms seq) =
+  BSL.toStrict $
+    BB.toLazyByteString $
+      BB.word64Dec ms <> BB.char7 '-' <> BB.word64Dec seq
+
+renderParseError :: ParseErrorBundle BS.ByteString Void -> BS.ByteString
+renderParseError =
+ BS8.pack . take 200 . oneLine . errorBundlePretty
+ where
+  oneLine = map (\c -> if c == '\n' || c == '\r' then ' ' else c)

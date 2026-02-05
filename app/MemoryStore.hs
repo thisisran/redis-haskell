@@ -1,21 +1,31 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 
 module MemoryStore
   ( MemoryStoreEntry (..)
-  , MemoryStore
+  , MemoryStore (..)
+  , ClientState (..)
   , MemoryStoreValue (..)
-  , BLPopWaiter (..)
+  , App
+  , runApp
+  , getSocket
+  , ExpireDuration (..)
+  , ExpireReference (..)
+  , getClientID
+  , getMulti
+  , updateMulti 
+  , getData
+  , getDataEntry
+  , setDataEntry
+  , addWaiterOnce
+  , getWaiterEntry
+  , delDataEntry
+  , delWaiterEntry
   , newMemoryStore
-  , getMemoryDataVal
-  , setMemoryDataKey
-  , delMemoryDataKey
-  , getMemoryWaitersVal
-  , getMemoryDataStreams
-  , setMemoryWaitersKey
-  , setMemoryDataStreams
-  , delMemoryWaitersKey
-  , addMemoryWaiter
-  , entryIdToBS
+  , getStreams
+  , getStream
+  , setStreams
   , EntryId (..)
   , Stream (..)
   , Streams (..)
@@ -28,17 +38,20 @@ module MemoryStore
 
 import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar')
 
+import Data.Maybe (fromMaybe)
+
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as M
+import qualified Data.IntSet as IS
 
 import Control.Monad (unless)
 
-import qualified Types as T
+import Control.Monad.State.Strict
+import Control.Monad.Reader
+
+import Network.Simple.TCP (Socket)
 
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Builder as BB
-import qualified Data.ByteString.Lazy as BSL
-import qualified Data.ByteString.Char8 as BS8
 
 import Data.Word (Word64)
 
@@ -53,29 +66,6 @@ data RangeEntryId = RangeMinusPlus
                   | RangeEntryId !Word64 !Word64
                   deriving (Eq, Show)
 
-entryIdToBS :: EntryId -> BS.ByteString
-entryIdToBS (EntryId ms seq) =
-  BSL.toStrict $
-    BB.toLazyByteString $
-      BB.word64Dec ms <> BB.char7 '-' <> BB.word64Dec seq
-
-parseStreamId :: BS.ByteString -> Maybe EntryId
-parseStreamId bs = do
-  let (a, rest) = BS8.break (=='-') bs
-  ('-', b) <- BS8.uncons rest
-  (msI, r1)  <- BS8.readInteger a
-  (seqI, r2) <- BS8.readInteger b
-  if BS8.null r1 && BS8.null r2 && msI >= 0 && seqI >= 0
-    then do
-      ms  <- toWord64 msI
-      seq <- toWord64 seqI
-      pure (EntryId ms seq)
-    else Nothing
-  where
-    toWord64 i
-      | i <= fromIntegral (maxBound :: Word64) = Just (fromIntegral i)
-      | otherwise                              = Nothing
-
 newtype Stream a    = Stream (M.Map EntryId a)
                       deriving (Eq, Show)
 newtype Streams n a = Streams (HM.HashMap n (Stream a))
@@ -83,82 +73,115 @@ newtype Streams n a = Streams (HM.HashMap n (Stream a))
 
 type RedisStreamValue = (BS.ByteString, BS.ByteString)
 type RedisStreamValues = [RedisStreamValue]
-type RedisStreams = Streams BS.ByteString RedisStreamValues
 type RedisStream = Stream RedisStreamValues
+type RedisStreams = Streams BS.ByteString RedisStreamValues
 
--- readAfter :: EntryId -> Stream a -> [(EntryId, a)]
--- readAfter sid (Stream stream) = (M.toAscList . snd . M.split sid) stream
-
--- readFromInclusive :: EntryId -> Stream a -> [(EntryId, a)]
--- readFromInclusive sid (Stream m) =
---   case M.splitLookup sid m of
---     (_lt, Nothing, gt) -> M.toAscList gt
---     (_lt, Just v, gt)  -> (sid, v) : M.toAscList gt
-
--- -- limit count (like XREAD COUNT)
--- readAfterN :: Int -> EntryId -> Stream a -> [(EntryId, a)]
--- readAfterN n sid = take n . readAfter sid
+newtype ExpireDuration = ExpireDuration Integer deriving (Eq, Show)  -- in miliseconds
+newtype ExpireReference = ExpireReference Integer deriving (Eq, Show)
 
 data MemoryStoreValue = MSIntegerVal Integer
                       | MSStringVal BS.ByteString
                       | MSListVal [BS.ByteString]
-                      | MSStreams (Streams BS.ByteString [(BS.ByteString, BS.ByteString)])
+                      | MSStreams RedisStreams
                       deriving (Eq, Show)
-
-newtype BLPopWaiter = BLPopWaiter T.ClientID deriving (Eq, Show)
-type BLPopWaiters = [BLPopWaiter]
 
 data MemoryStoreEntry = MemoryStoreEntry
   { val :: MemoryStoreValue,
-    expiresAt :: Maybe (T.ExpireDuration, T.ExpireReference)
+    expiresAt :: Maybe (ExpireDuration, ExpireReference)
   } deriving (Eq, Show)
 
 data MemoryStore = MemoryStore
   { msData :: TVar (M.Map BS.ByteString MemoryStoreEntry)
-  , msBLPopWaiters :: TVar (M.Map BS.ByteString BLPopWaiters)
+  , msBLPopWaiters :: TVar (M.Map BS.ByteString IS.IntSet)
   }
+
+data ClientState = ClientState
+  { multi :: !Bool
+  , clientID :: !Int
+  , socket :: Socket }
+
+newtype App a = App { unApp :: ReaderT MemoryStore (StateT ClientState IO) a}
+  deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader MemoryStore)
+
+-- newtype App a = App { unApp :: StateT ClientState (ReaderT MemoryStore IO) a}
+--   deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader MemoryStore)
+
+runApp  :: MemoryStore -> ClientState -> App a -> IO (a, ClientState)
+runApp store st = (`runStateT` st) . (`runReaderT` store) . unApp
+
+getData :: App (TVar (M.Map BS.ByteString MemoryStoreEntry))
+getData = asks (.msData)
+
+getWaiters :: App (TVar (M.Map BS.ByteString IS.IntSet))
+getWaiters = asks (.msBLPopWaiters )
+
+setDataEntry :: BS.ByteString -> MemoryStoreEntry -> App ()
+setDataEntry key value = do
+  tv <- getData
+  liftIO . atomically $ modifyTVar' tv (M.insert key value)
+
+getDataEntry :: BS.ByteString -> App (Maybe MemoryStoreEntry)
+getDataEntry key = do
+  tv <- getData
+  liftIO $ M.lookup key <$> readTVarIO tv
+
+delDataEntry :: BS.ByteString -> App ()
+delDataEntry key = do
+  tv <- getData
+  liftIO . atomically $ do
+    m0 <- readTVar tv
+    let m1 = M.delete key m0
+    writeTVar tv m1
+
+delWaiterEntry :: BS.ByteString -> App ()
+delWaiterEntry key = do
+  tv <- getWaiters
+  liftIO . atomically $ do
+    m0 <- readTVar tv
+    let m1 = M.delete key m0
+    writeTVar tv m1
+
+addWaiterOnce :: BS.ByteString -> Int -> App ()
+addWaiterOnce k w = do
+  tv <- getWaiters
+  liftIO . atomically $
+    modifyTVar' tv (M.insertWith IS.union k (IS.singleton w))
+
+getWaiterEntry :: BS.ByteString -> App (Maybe IS.IntSet)
+getWaiterEntry key = do
+  tv <- getWaiters
+  liftIO $ M.lookup key <$> readTVarIO tv
+
+updateMulti :: Bool -> App ()
+updateMulti state = modify' (\cs -> cs { multi = state })
+
+getMulti :: App Bool
+getMulti = gets (.multi )
+
+getClientID :: App Int
+getClientID = gets (.clientID)
+
+getSocket :: App Socket
+getSocket = gets (.socket)
 
 newMemoryStore :: IO MemoryStore
 newMemoryStore = MemoryStore <$> newTVarIO M.empty <*> newTVarIO M.empty
 
-getMemoryDataVal :: MemoryStore -> T.DataKey -> IO (Maybe MemoryStoreEntry)
-getMemoryDataVal (MemoryStore d w) k = M.lookup k <$> readTVarIO d
+getStreams :: App RedisStreams
+getStreams = do
+  streams <- getDataEntry "streams"
+  pure $ case streams of
+    Just (MemoryStoreEntry (MSStreams s) Nothing) -> s
+    _ -> Streams HM.empty
 
-getMemoryDataStreams :: MemoryStore -> IO (Maybe MemoryStoreEntry)
-getMemoryDataStreams store = getMemoryDataVal store "streams"
+getStream ::
+  BS.ByteString ->
+  (M.Map EntryId RedisStreamValues -> Maybe (EntryId, RedisStreamValues)) ->
+  App (Maybe (EntryId, RedisStreamValues), RedisStream, RedisStreams)
+getStream streamID filter = do
+  s@(Streams streams) <- getStreams
+  let os@(Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
+  pure (filter oldStream, os, s)
 
-setMemoryDataKey :: MemoryStore -> T.DataKey -> MemoryStoreEntry -> IO ()
-setMemoryDataKey (MemoryStore d w) k v = atomically $ modifyTVar' d (M.insert k v)
-
-setMemoryDataStreams :: MemoryStore -> MemoryStoreEntry -> IO ()
-setMemoryDataStreams store = setMemoryDataKey store "streams"
-
-delMemoryDataKey :: MemoryStore -> T.DataKey -> IO Bool
-delMemoryDataKey (MemoryStore d w) k = atomically $ do
-  m <- readTVar d
-  let existed = M.member k m
-  writeTVar d (M.delete k m)
-  pure existed
-
-getMemoryWaitersVal :: MemoryStore -> T.ListKey -> IO (Maybe BLPopWaiters)
-getMemoryWaitersVal (MemoryStore d w) k = M.lookup k <$> readTVarIO w
-
-setMemoryWaitersKey :: MemoryStore -> T.ListKey -> BLPopWaiters -> IO ()
-setMemoryWaitersKey (MemoryStore d w) k v = atomically $ modifyTVar' w (M.insert k v)
-
-addMemoryWaiter :: MemoryStore -> T.ListKey -> T.ClientID -> IO ()
-addMemoryWaiter store listKey cid = do
-  val <- getMemoryWaitersVal store listKey
-  case val of
-    Nothing -> insertNewClient []
-    Just xs -> unless (foldr checkEq False xs) $ insertNewClient xs
-               where checkEq _ True = True
-                     checkEq (BLPopWaiter curr) acc = curr == cid
-  where insertNewClient ys = setMemoryWaitersKey store listKey (ys ++ [BLPopWaiter cid])
-
-delMemoryWaitersKey :: MemoryStore -> T.ListKey -> IO Bool
-delMemoryWaitersKey (MemoryStore d w) k = atomically $ do
-  m <- readTVar w
-  let existed = M.member k m
-  writeTVar w (M.delete k m)
-  pure existed
+setStreams :: MemoryStoreEntry -> App ()
+setStreams = setDataEntry "streams"
