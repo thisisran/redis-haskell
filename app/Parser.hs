@@ -54,6 +54,7 @@ data Command
   | XAdd BS.ByteString MS.EntryId [(BS.ByteString, BS.ByteString)]
   | XRange BS.ByteString MS.RangeEntryId MS.RangeEntryId
   | XRead [(BS.ByteString, MS.RangeEntryId)] (Maybe Double)
+  | Incr BS.ByteString
   deriving (Show, Eq)
 
 parseBulkString :: Parser BS.ByteString
@@ -99,6 +100,7 @@ specs =
   , CommandSpec ["XADD"] parseXADD
   , CommandSpec ["XRANGE"] parseXRANGE
   , CommandSpec ["XREAD"] parseXREAD
+  , CommandSpec ["INCR"] parseINCR
   ]
 
 lookupSpec :: BS.ByteString -> [CommandSpec] -> Maybe CommandSpec
@@ -332,3 +334,8 @@ parseXREAD n = do
   keys <- countBulk $ (n - count) `div` 2
   ids <- countStartRange $ (n - count) `div` 2
   pure (XRead (zip keys ids) timeout)
+
+parseINCR :: Int -> Parser Command
+parseINCR n = do
+  expectArity [2] n
+  Incr <$> parseBulkString

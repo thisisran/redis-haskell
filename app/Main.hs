@@ -309,6 +309,17 @@ xreadCommand socket store keysIds Nothing = do
           streamResp <- xrangeHelper store stream_id (<=) entry_id seq
           go xs (acc <> "*2\r\n" <> encodeBulkString stream_id <> streamResp) elapsed
 
+incrCommand :: Socket -> MemoryStore -> BS.ByteString -> IO ()
+incrCommand socket store key = do
+  val <- getMemoryDataVal store key
+  case val of
+    Nothing   -> undefined -- TODO: will be added as one of the next stages
+    Just (MemoryStoreEntry (MSStringVal v) Nothing) -> case U.bsToInt v of
+                                                         Nothing -> undefined
+                                                         Just i -> do
+                                                           setMemoryDataKey store key (MemoryStoreEntry (MSStringVal $ (BS8.pack . show) (i+1)) Nothing)
+                                                           send socket $ encodeInteger (i+1)
+
 main :: IO ()
 main = do
   hSetBuffering stdout NoBuffering
@@ -348,7 +359,8 @@ main = do
               Right (Type key) -> typeCommand socket store key >> loop
               Right (XAdd streamID entryID values) -> xaddCommand socket store streamID entryID values >> loop
               Right (XRange key start end) -> xrangeCommand socket store key start end >> loop
-              Right (XRead keysIds timeout) -> putStrLn ("keyids are: " <> show keysIds) >> xreadCommand socket store keysIds timeout >> loop
+              Right (XRead keysIds timeout) -> xreadCommand socket store keysIds timeout >> loop
+              Right (Incr key) -> incrCommand socket store key >> loop
               Left e -> hPutStrLn stderr (prettifyErrors e) >> loop
 
     loop

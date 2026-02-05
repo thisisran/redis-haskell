@@ -99,7 +99,8 @@ type RedisStream = Stream RedisStreamValues
 -- readAfterN :: Int -> EntryId -> Stream a -> [(EntryId, a)]
 -- readAfterN n sid = take n . readAfter sid
 
-data MemoryStoreValue = MSStringVal BS.ByteString
+data MemoryStoreValue = MSIntegerVal Integer
+                      | MSStringVal BS.ByteString
                       | MSListVal [BS.ByteString]
                       | MSStreams (Streams BS.ByteString [(BS.ByteString, BS.ByteString)])
                       deriving (Eq, Show)
