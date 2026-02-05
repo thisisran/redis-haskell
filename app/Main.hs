@@ -317,7 +317,7 @@ incrCommand socket store key = do
       setMemoryDataKey store key (MemoryStoreEntry (MSStringVal "1") Nothing)
       send socket $ encodeInteger 1           
     Just (MemoryStoreEntry (MSStringVal v) Nothing) -> case U.bsToInt v of
-                                                         Nothing -> undefined
+                                                         Nothing -> send socket $ encodeSimpleError "value is not an integer or out of range"
                                                          Just i -> do
                                                            setMemoryDataKey store key (MemoryStoreEntry (MSStringVal $ (BS8.pack . show) (i+1)) Nothing)
                                                            send socket $ encodeInteger (i+1)
