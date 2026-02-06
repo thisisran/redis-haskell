@@ -108,10 +108,10 @@ data MemoryStore = MemoryStore
 
 data ClientState = ClientState
   { multi :: !Bool
-  , multiList :: [Command]
+  , multiList :: [App BS.ByteString]
   , clientID :: !Int
   , socket :: Socket
-  } deriving (Eq, Show)
+  }
 
 newtype App a = App { unApp :: ReaderT MemoryStore (StateT ClientState IO) a}
   deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader MemoryStore)

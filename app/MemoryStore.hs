@@ -84,7 +84,7 @@ getWaiterEntry key = do
 updateMulti :: Bool -> App ()
 updateMulti state = modify' (\cs -> cs { multi = state })
 
-addMultiCommand :: Command -> App ()
+addMultiCommand :: App BS.ByteString -> App ()
 addMultiCommand cmd = do
   ml <- gets (.multiList)
   modify' (\cs -> cs { multiList = ml ++ [cmd] })
@@ -92,7 +92,7 @@ addMultiCommand cmd = do
 getMulti :: App Bool
 getMulti = gets (.multi )
 
-getMultiList :: App [Command]
+getMultiList :: App [App BS.ByteString]
 getMultiList = gets (.multiList)
 
 getClientID :: App Int

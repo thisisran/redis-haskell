@@ -310,16 +310,24 @@ execCommand = do
   then do
     ml <- getMultiList
     if null ml
-    then pure (encodeArray True [])
-    else undefined
-  else pure (encodeSimpleError "EXEC without MULTI")
+    then pure $ encodeArray True []
+    else do
+      ml <- getMultiList
+      res <- go ml []
+      pure $ encodeArray False res
+  else pure $ encodeSimpleError "EXEC without MULTI"
+  where go :: [App BS.ByteString] -> [BS.ByteString] -> App [BS.ByteString]
+        go [] acc = pure acc
+        go (x:xs) acc = do
+           resp <- x
+           go xs (acc ++ [resp])
   
 handleMultiCmd :: Command -> App BS.ByteString -> App BS.ByteString
 handleMultiCmd cmd op = do
   multi <- getMulti
   if multi
   then do
-    addMultiCommand cmd
+    addMultiCommand op
     pure $ encodeSimpleString "QUEUED"
   else op
 
