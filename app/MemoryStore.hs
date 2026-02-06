@@ -8,6 +8,7 @@ module MemoryStore
   , getMultiList
   , updateMulti
   , addMultiCommand
+  , resetMultiCommands
   , getData
   , getDataEntry
   , setDataEntry
@@ -88,6 +89,9 @@ addMultiCommand :: App BS.ByteString -> App ()
 addMultiCommand cmd = do
   ml <- gets (.multiList)
   modify' (\cs -> cs { multiList = ml ++ [cmd] })
+
+resetMultiCommands :: App ()
+resetMultiCommands = modify' (\cs -> cs { multiList = [] })
 
 getMulti :: App Bool
 getMulti = gets (.multi )

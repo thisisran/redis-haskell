@@ -64,6 +64,7 @@ data Command
   | Incr BS.ByteString
   | Multi
   | Exec
+  | Discard
   deriving (Show, Eq)
 
 data EntryId = EntryId !Word64 !Word64

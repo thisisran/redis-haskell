@@ -72,6 +72,7 @@ specs =
   , CommandSpec ["INCR"] parseINCR
   , CommandSpec ["MULTI"] parseMULTI
   , CommandSpec ["EXEC"] parseEXEC
+  , CommandSpec ["DISCARD"] parseDISCARD
   ]
 
 lookupSpec :: BS.ByteString -> [CommandSpec] -> Maybe CommandSpec
@@ -320,3 +321,8 @@ parseEXEC :: Int -> Parser Command
 parseEXEC n = do
   expectArity [1] n
   pure Exec
+
+parseDISCARD :: Int -> Parser Command
+parseDISCARD n = do
+  expectArity [1] n
+  pure Discard 

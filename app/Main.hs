@@ -321,7 +321,17 @@ execCommand = do
         go (x:xs) acc = do
            resp <- x
            go xs (acc ++ [resp])
-  
+
+discardCommand :: App BS.ByteString
+discardCommand = do
+  multi <- getMulti
+  if multi
+  then do
+    updateMulti False
+    resetMultiCommands
+    pure $ encodeSimpleString "OK"
+  else pure $ encodeSimpleError "DISCARD without MULTI"
+
 handleMultiCmd :: Command -> App BS.ByteString -> App BS.ByteString
 handleMultiCmd cmd op = do
   multi <- getMulti
@@ -359,6 +369,7 @@ handleConnection = go
             Right (Incr key) -> handleMultiCmd (Incr key) $ incrCommand key
             Right Multi -> updateMulti True >> pure (encodeSimpleString "OK")
             Right Exec -> execCommand
+            Right Discard -> discardCommand
             Left e -> pure $ U.renderParseError e
           -- list <- getMultiList
           liftIO $ send sock resp
