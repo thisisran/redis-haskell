@@ -302,6 +302,18 @@ incrCommand key = do
         setDataEntry key (MemoryStoreEntry (MSStringVal $ (BS8.pack . show) (i + 1)) Nothing)
         pure $ encodeInteger (i + 1)
 
+execCommand :: App BS.ByteString
+execCommand = do
+  multi <- getMulti
+  updateMulti False
+  if multi
+  then do
+    ml <- getMultiList
+    if null ml
+    then pure (encodeArray True [])
+    else undefined
+  else pure (encodeSimpleError "EXEC without MULTI")
+  
 handleMultiCmd :: Command -> App BS.ByteString -> App BS.ByteString
 handleMultiCmd cmd op = do
   multi <- getMulti
@@ -338,9 +350,7 @@ handleConnection = go
             Right (XRead keysIds timeout) -> handleMultiCmd (XRead keysIds timeout) $ xreadCommand keysIds timeout
             Right (Incr key) -> handleMultiCmd (Incr key) $ incrCommand key
             Right Multi -> updateMulti True >> pure (encodeSimpleString "OK")
-            Right Exec -> do
-              multi <- getMulti
-              if multi then undefined else pure (encodeSimpleError "EXEC without MULTI")
+            Right Exec -> execCommand
             Left e -> pure $ U.renderParseError e
           -- list <- getMultiList
           liftIO $ send sock resp
