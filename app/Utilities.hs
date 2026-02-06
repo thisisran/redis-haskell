@@ -24,7 +24,7 @@ import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Lazy as BSL
 
-import MemoryStore (EntryId (..))
+import Types (EntryId (..))
 
 import Data.Time.Clock.POSIX (getPOSIXTime)
 

@@ -1,20 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
 module MemoryStore
-  ( MemoryStoreEntry (..)
-  , MemoryStore (..)
-  , ClientState (..)
-  , MemoryStoreValue (..)
-  , App
-  , runApp
-  , getSocket
-  , ExpireDuration (..)
-  , ExpireReference (..)
+  ( getSocket
   , getClientID
   , getMulti
-  , updateMulti 
+  , getMultiList
+  , updateMulti
+  , addMultiCommand
   , getData
   , getDataEntry
   , setDataEntry
@@ -26,25 +19,17 @@ module MemoryStore
   , getStreams
   , getStream
   , setStreams
-  , EntryId (..)
-  , Stream (..)
-  , Streams (..)
-  , RangeEntryId (..)
-  , RedisStreams
-  , RedisStream
-  , RedisStreamValue
-  , RedisStreamValues
   ) where
 
 import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar')
 
 import Data.Maybe (fromMaybe)
 
+import Types
+
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as M
 import qualified Data.IntSet as IS
-
-import Control.Monad (unless)
 
 import Control.Monad.State.Strict
 import Control.Monad.Reader
@@ -52,62 +37,6 @@ import Control.Monad.Reader
 import Network.Simple.TCP (Socket)
 
 import qualified Data.ByteString as BS
-
-import Data.Word (Word64)
-
-data EntryId = EntryId !Word64 !Word64
-             | EntryGenSeq !Word64
-             | EntryGenNew
-             deriving (Eq, Ord, Show)
-
-data RangeEntryId = RangeMinusPlus
-                  | RangeDollar
-                  | RangeMili !Word64
-                  | RangeEntryId !Word64 !Word64
-                  deriving (Eq, Show)
-
-newtype Stream a    = Stream (M.Map EntryId a)
-                      deriving (Eq, Show)
-newtype Streams n a = Streams (HM.HashMap n (Stream a))
-                      deriving (Eq, Show)
-
-type RedisStreamValue = (BS.ByteString, BS.ByteString)
-type RedisStreamValues = [RedisStreamValue]
-type RedisStream = Stream RedisStreamValues
-type RedisStreams = Streams BS.ByteString RedisStreamValues
-
-newtype ExpireDuration = ExpireDuration Integer deriving (Eq, Show)  -- in miliseconds
-newtype ExpireReference = ExpireReference Integer deriving (Eq, Show)
-
-data MemoryStoreValue = MSIntegerVal Integer
-                      | MSStringVal BS.ByteString
-                      | MSListVal [BS.ByteString]
-                      | MSStreams RedisStreams
-                      deriving (Eq, Show)
-
-data MemoryStoreEntry = MemoryStoreEntry
-  { val :: MemoryStoreValue,
-    expiresAt :: Maybe (ExpireDuration, ExpireReference)
-  } deriving (Eq, Show)
-
-data MemoryStore = MemoryStore
-  { msData :: TVar (M.Map BS.ByteString MemoryStoreEntry)
-  , msBLPopWaiters :: TVar (M.Map BS.ByteString IS.IntSet)
-  }
-
-data ClientState = ClientState
-  { multi :: !Bool
-  , clientID :: !Int
-  , socket :: Socket }
-
-newtype App a = App { unApp :: ReaderT MemoryStore (StateT ClientState IO) a}
-  deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader MemoryStore)
-
--- newtype App a = App { unApp :: StateT ClientState (ReaderT MemoryStore IO) a}
---   deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader MemoryStore)
-
-runApp  :: MemoryStore -> ClientState -> App a -> IO (a, ClientState)
-runApp store st = (`runStateT` st) . (`runReaderT` store) . unApp
 
 getData :: App (TVar (M.Map BS.ByteString MemoryStoreEntry))
 getData = asks (.msData)
@@ -155,8 +84,16 @@ getWaiterEntry key = do
 updateMulti :: Bool -> App ()
 updateMulti state = modify' (\cs -> cs { multi = state })
 
+addMultiCommand :: Command -> App ()
+addMultiCommand cmd = do
+  ml <- gets (.multiList)
+  modify' (\cs -> cs { multiList = ml ++ [cmd] })
+
 getMulti :: App Bool
 getMulti = gets (.multi )
+
+getMultiList :: App [Command]
+getMultiList = gets (.multiList)
 
 getClientID :: App Int
 getClientID = gets (.clientID)

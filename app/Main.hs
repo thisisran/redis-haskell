@@ -18,9 +18,11 @@ import Data.Word (Word64)
 import Encode
 import MemoryStore
 import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve)
-import Parser
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 import qualified Utilities as U
+
+import Types
+import Parser
 
 -- TODO: Eventually will need to turn it into a recursive function that will process all the arguments provided, not just 1 additional one
 setCommand :: BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> App BS.ByteString
@@ -300,6 +302,15 @@ incrCommand key = do
         setDataEntry key (MemoryStoreEntry (MSStringVal $ (BS8.pack . show) (i + 1)) Nothing)
         pure $ encodeInteger (i + 1)
 
+handleMultiCmd :: Command -> App BS.ByteString -> App BS.ByteString
+handleMultiCmd cmd op = do
+  multi <- getMulti
+  if multi
+  then do
+    addMultiCommand cmd
+    pure $ encodeSimpleString "QUEUED"
+  else op
+
 handleConnection :: App ()
 handleConnection = go
   where
@@ -311,24 +322,29 @@ handleConnection = go
         Nothing -> pure ()
         Just buf -> do
           resp <- case runParse buf of
-            Right Ping -> pure $ encodeSimpleString "PONG"
-            Right (Echo str) -> pure $ encodeBulkString str
-            Right (Set key val args) -> setCommand key val args
-            Right (Get key) -> getCommand key
-            Right (RPush key values) -> pushCommand key values RightPushCmd
-            Right (LPush key values) -> pushCommand key values LeftPushCmd
-            Right (LRange key start stop) -> lrangeCommand key start stop
-            Right (LLen key) -> llenCommand key
-            Right (LPop key count) -> lpopCommand key count
-            Right (BLPop key timeout) -> blpopCommand key timeout clientID
-            Right (Type key) -> typeCommand key
-            Right (XAdd streamID entryID values) -> xaddCommand streamID entryID values
-            Right (XRange key start end) -> xrangeCommand key start end
-            Right (XRead keysIds timeout) -> xreadCommand keysIds timeout
-            Right (Incr key) -> incrCommand key
+            Right Ping -> handleMultiCmd Ping $ pure (encodeSimpleString "PONG")
+            Right (Echo str) -> handleMultiCmd (Echo str) $ pure $ encodeBulkString str
+            Right (Set key val args) -> handleMultiCmd (Set key val args) $ setCommand key val args
+            Right (Get key) -> handleMultiCmd (Get key) $ getCommand key
+            Right (RPush key values) -> handleMultiCmd (RPush key values) $ pushCommand key values RightPushCmd
+            Right (LPush key values) -> handleMultiCmd (LPush key values) $ pushCommand key values LeftPushCmd
+            Right (LRange key start stop) -> handleMultiCmd (LRange key start stop) $ lrangeCommand key start stop
+            Right (LLen key) -> handleMultiCmd (LLen key) $ llenCommand key
+            Right (LPop key count) -> handleMultiCmd (LPop key count) $ lpopCommand key count
+            Right (BLPop key timeout) -> handleMultiCmd (BLPop key timeout) $ blpopCommand key timeout clientID
+            Right (Type key) -> handleMultiCmd (Type key) $ typeCommand key
+            Right (XAdd streamID entryID values) -> handleMultiCmd (XAdd streamID entryID values) $ xaddCommand streamID entryID values
+            Right (XRange key start end) -> handleMultiCmd (XRange key start end) $ xrangeCommand key start end
+            Right (XRead keysIds timeout) -> handleMultiCmd (XRead keysIds timeout) $ xreadCommand keysIds timeout
+            Right (Incr key) -> handleMultiCmd (Incr key) $ incrCommand key
             Right Multi -> updateMulti True >> pure (encodeSimpleString "OK")
+            Right Exec -> do
+              multi <- getMulti
+              if multi then undefined else pure (encodeSimpleError "EXEC without MULTI")
             Left e -> pure $ U.renderParseError e
+          -- list <- getMultiList
           liftIO $ send sock resp
+          -- liftIO $ send sock $ (BS8.pack . show) list
           go
 
 reversePairs :: [Int] -> Int
@@ -364,6 +380,6 @@ main = do
       writeTVar nextID (i + 1)
       pure i
 
-    let cs = ClientState {multi = False, clientID = clientID, socket = socket}
+    let cs = ClientState {multi = False, multiList = [], clientID = clientID, socket = socket }
     runApp store cs handleConnection
     closeSock socket
