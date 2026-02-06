@@ -4,21 +4,23 @@
 
 module Main (main) where
 
+import System.Environment (getArgs)
+import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
+
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.State.Class (get, gets)
+import Data.Word (Word64)
+import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve)
+
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.HashMap.Strict as HM
 import qualified Data.IntSet as IS
 import qualified Data.Map.Strict as M
-import Data.Maybe (fromMaybe)
-import Data.Word (Word64)
+
 import Encode
 import MemoryStore
-import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve)
-import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 import qualified Utilities as U
 
 import Types
@@ -332,8 +334,8 @@ discardCommand = do
     pure $ encodeSimpleString "OK"
   else pure $ encodeSimpleError "DISCARD without MULTI"
 
-handleMultiCmd :: Command -> App BS.ByteString -> App BS.ByteString
-handleMultiCmd cmd op = do
+handleMultiCmd :: App BS.ByteString -> App BS.ByteString
+handleMultiCmd op = do
   multi <- getMulti
   if multi
   then do
@@ -352,28 +354,26 @@ handleConnection = go
         Nothing -> pure ()
         Just buf -> do
           resp <- case runParse buf of
-            Right Ping -> handleMultiCmd Ping $ pure (encodeSimpleString "PONG")
-            Right (Echo str) -> handleMultiCmd (Echo str) $ pure $ encodeBulkString str
-            Right (Set key val args) -> handleMultiCmd (Set key val args) $ setCommand key val args
-            Right (Get key) -> handleMultiCmd (Get key) $ getCommand key
-            Right (RPush key values) -> handleMultiCmd (RPush key values) $ pushCommand key values RightPushCmd
-            Right (LPush key values) -> handleMultiCmd (LPush key values) $ pushCommand key values LeftPushCmd
-            Right (LRange key start stop) -> handleMultiCmd (LRange key start stop) $ lrangeCommand key start stop
-            Right (LLen key) -> handleMultiCmd (LLen key) $ llenCommand key
-            Right (LPop key count) -> handleMultiCmd (LPop key count) $ lpopCommand key count
-            Right (BLPop key timeout) -> handleMultiCmd (BLPop key timeout) $ blpopCommand key timeout clientID
-            Right (Type key) -> handleMultiCmd (Type key) $ typeCommand key
-            Right (XAdd streamID entryID values) -> handleMultiCmd (XAdd streamID entryID values) $ xaddCommand streamID entryID values
-            Right (XRange key start end) -> handleMultiCmd (XRange key start end) $ xrangeCommand key start end
-            Right (XRead keysIds timeout) -> handleMultiCmd (XRead keysIds timeout) $ xreadCommand keysIds timeout
-            Right (Incr key) -> handleMultiCmd (Incr key) $ incrCommand key
+            Right Ping -> handleMultiCmd $ pure (encodeSimpleString "PONG")
+            Right (Echo str) -> handleMultiCmd $ pure $ encodeBulkString str
+            Right (Set key val args) -> handleMultiCmd $ setCommand key val args
+            Right (Get key) -> handleMultiCmd $ getCommand key
+            Right (RPush key values) -> handleMultiCmd $ pushCommand key values RightPushCmd
+            Right (LPush key values) -> handleMultiCmd $ pushCommand key values LeftPushCmd
+            Right (LRange key start stop) -> handleMultiCmd $ lrangeCommand key start stop
+            Right (LLen key) -> handleMultiCmd $ llenCommand key
+            Right (LPop key count) -> handleMultiCmd $ lpopCommand key count
+            Right (BLPop key timeout) -> handleMultiCmd $ blpopCommand key timeout clientID
+            Right (Type key) -> handleMultiCmd $ typeCommand key
+            Right (XAdd streamID entryID values) -> handleMultiCmd $ xaddCommand streamID entryID values
+            Right (XRange key start end) -> handleMultiCmd $ xrangeCommand key start end
+            Right (XRead keysIds timeout) -> handleMultiCmd $ xreadCommand keysIds timeout
+            Right (Incr key) -> handleMultiCmd $ incrCommand key
             Right Multi -> updateMulti True >> pure (encodeSimpleString "OK")
             Right Exec -> execCommand
             Right Discard -> discardCommand
             Left e -> pure $ U.renderParseError e
-          -- list <- getMultiList
           liftIO $ send sock resp
-          -- liftIO $ send sock $ (BS8.pack . show) list
           go
 
 reversePairs :: [Int] -> Int
@@ -396,10 +396,11 @@ main = do
   -- You can use print statements as follows for debugging, they'll be visible when running tests.
   -- hPutStrLn stderr "Logs from your program will appear here"
 
+  args <- getArgs
   store <- newMemoryStore
   nextID <- newTVarIO (0 :: Int)
 
-  let port = "6379"
+  let port = getPort "6379" args
   putStrLn $ "Redis server listening on port " ++ port
   serve HostAny port $ \(socket, address) -> do
     putStrLn $ "successfully connected client: " ++ show address
@@ -412,3 +413,8 @@ main = do
     let cs = ClientState {multi = False, multiList = [], clientID = clientID, socket = socket }
     runApp store cs handleConnection
     closeSock socket
+    
+  where
+    getPort def [] = def
+    getPort def ("--port" : port : _) = port
+  

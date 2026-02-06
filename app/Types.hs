@@ -114,7 +114,7 @@ data ClientState = ClientState
   , socket :: Socket
   }
 
-newtype App a = App { unApp :: ReaderT MemoryStore (StateT ClientState IO) a}
+newtype App a = App { unApp :: ReaderT MemoryStore (StateT ClientState IO) a }
   deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader MemoryStore)
 
 -- newtype App a = App { unApp :: StateT ClientState (ReaderT MemoryStore IO) a}
