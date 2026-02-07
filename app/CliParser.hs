@@ -1,28 +1,29 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module CliParser
-  ( parseConfig
+  ( parseCli
   ) where
 
 import Types
 
 import Options.Applicative
 
-parseConfig :: IO Config
-parseConfig = execParser $ info (configP <**> helper) $
+parseCli :: IO CLIOptions
+parseCli = execParser $ info (configP <**> helper) $
   fullDesc <> progDesc "Redis clone"
 
-configP :: Parser Config
+configP :: Parser CLIOptions
 configP =
-  Config
+  CLIOptions
     <$> optional (option str (long "port" <> metavar "PORT" <> help "Port to listen on"))
-    <*> optional replicaOfP
+    <*> replicaOfP
 
-replicaOfP :: Parser ReplicationInfo
+replicaOfP :: Parser ReplicationCmdOption
 replicaOfP =
   option (eitherReader parse)
     (long "replicaof" <> metavar "HOST PORT" <> help "Replica of upstream HOST PORT")
+    <|> pure WantMaster
  where
   parse s = case words s of
-    [h,p] -> Right (Slave h p)
+    [h,p] -> Right (WantSlave h p)
     _     -> Left "Expected: --replicaof \"HOST PORT\""

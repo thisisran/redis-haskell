@@ -23,7 +23,9 @@ module Types
   , Streams (..)
   , runApp
   , Config (..)
+  , CLIOptions (..)
   , ReplicationInfo (..)
+  , ReplicationCmdOption (..)
   , Env (..)
   ) where
 
@@ -119,25 +121,34 @@ data MemoryStore = MemoryStore
   , msBLPopWaiters :: TVar (M.Map BS.ByteString IS.IntSet)
   }
 
-data Env = Env
-  { envStore :: !MemoryStore
-  , envConfig :: !Config
-  }
+data ReplicationCmdOption = WantMaster
+                          | WantSlave { rcoHost :: !String, rcoPort :: !String }
+                          deriving stock (Eq, Show)
+
+data CLIOptions = CLIOptions
+  { cliPort        :: !(Maybe String)
+  , cliReplication :: !ReplicationCmdOption
+  } deriving stock (Eq, Show)
 
 data ReplicationInfo = Master { repID :: !String, repOffset :: !Int }
                      | Slave  { roHost :: !String, roPort :: !String }
                      deriving stock (Eq, Show)
 
 data Config = Config
-  { cfgPort      :: !(Maybe String)
-  , cfgReplication :: !(Maybe ReplicationInfo)
+  { cfgPort        :: !String
+  , cfgID          :: !Int
+  , cfgSocket      :: !Socket
+  , cfgReplication :: !ReplicationInfo
   } deriving stock (Eq, Show)
+
+data Env = Env
+  { envStore :: !MemoryStore
+  , envConfig :: !Config
+  }
 
 data ClientState = ClientState
   { multi :: !Bool
   , multiList :: [App BS.ByteString]
-  , clientID :: !Int
-  , socket :: Socket
   }
 
 newtype App a = App { unApp :: ReaderT Env (StateT ClientState IO) a }

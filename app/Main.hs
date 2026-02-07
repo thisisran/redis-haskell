@@ -103,11 +103,12 @@ llenCommand key = do
 lpopHelper :: BS.ByteString -> Int -> App BS.ByteString
 lpopHelper key count = do
   val <- getDataEntry key
+  socket <- getSocket
   case val of
     Nothing -> pure encodeNullBulkString
     Just (MemoryStoreEntry (MSListVal v) Nothing) ->
       let normCount = min count $ length v
-       in go v socket normCount
+      in go v socket normCount
       where
         go [] socket _ = pure encodeNullBulkString
         go xs socket c = do
@@ -350,9 +351,8 @@ infoCommand :: InfoRequest -> App BS.ByteString
 infoCommand Replication = do
   role <- getRole
   case role of
-    Nothing -> pure $ encodeSimpleError "Error in INFO command"
-    Just (Master repID repOffset) -> pure $ encodeBulkString $ "# Replication\nrole:master\nmaster_replid:" <> BS8.pack repID <> "\nmaster_repl_offset:" <> (BS8.pack . show) repOffset
-    Just (Slave roHost roPort) -> pure $ encodeBulkString "# Replication\nrole:slave"
+    Master repID repOffset -> pure $ encodeBulkString $ "# Replication\nrole:master\nmaster_replid:" <> BS8.pack repID <> "\nmaster_repl_offset:" <> (BS8.pack . show) repOffset
+    Slave roHost roPort -> pure $ encodeBulkString "# Replication\nrole:slave"
 
 handleConnection :: App ()
 handleConnection = go
@@ -388,6 +388,7 @@ handleConnection = go
           liftIO $ send sock resp
           go
 
+
 main :: IO ()
 main = do
   hSetBuffering stdout NoBuffering
@@ -396,14 +397,12 @@ main = do
   -- You can use print statements as follows for debugging, they'll be visible when running tests.
   -- hPutStrLn stderr "Logs from your program will appear here"
 
-  cfg <- parseConfig
+  cfgCli <- parseCli
   store <- newMemoryStore
-
-  let env = Env store cfg
-  
   nextID <- newTVarIO (0 :: Int)
 
-  let port = fromMaybe "6379" (cfgPort cfg)
+  let port = fromMaybe "6379" (cliPort cfgCli)
+
   putStrLn $ "Redis server listening on port " ++ port
   serve HostAny port $ \(socket, address) -> do
     putStrLn $ "successfully connected client: " ++ show address
@@ -413,14 +412,14 @@ main = do
       writeTVar nextID (i + 1)
       pure i
 
-    let cs = ClientState {multi = False, multiList = [], clientID = clientID, socket = socket }
+    let cs = ClientState {multi = False, multiList = [] }
 
     repID <- U.randomAlphaNum40BS
-    case cfgReplication cfg of
-      Nothing -> runApp (setReplication (Just (Master (BS8.unpack repID) 0)) env) cs handleConnection
-                 where
-                   setReplication :: Maybe ReplicationInfo -> Env -> Env
-                   setReplication r e = e { envConfig = e.envConfig { cfgReplication = r } }
-      Just repl -> runApp env cs handleConnection
--- usage
+    let cfg = case cliReplication cfgCli of
+                WantMaster -> Config port clientID socket (Master (BS8.unpack repID) 0)
+                WantSlave wantHost wantPort -> Config port clientID socket (Slave wantHost wantPort)
+
+    let env = Env store cfg
+
+    runApp env cs handleConnection
     closeSock socket

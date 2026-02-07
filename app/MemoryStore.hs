@@ -83,32 +83,15 @@ getWaiterEntry key = do
   tv <- getWaiters
   liftIO $ M.lookup key <$> readTVarIO tv
 
-getRole :: App (Maybe ReplicationInfo)
+getRole :: App ReplicationInfo
 getRole = do
   asks $ (.cfgReplication) . envConfig
 
-updateMulti :: Bool -> App ()
-updateMulti state = modify' (\cs -> cs { multi = state })
-
-addMultiCommand :: App BS.ByteString -> App ()
-addMultiCommand cmd = do
-  ml <- gets (.multiList)
-  modify' (\cs -> cs { multiList = ml ++ [cmd] })
-
-resetMultiCommands :: App ()
-resetMultiCommands = modify' (\cs -> cs { multiList = [] })
-
-getMulti :: App Bool
-getMulti = gets (.multi)
-
-getMultiList :: App [App BS.ByteString]
-getMultiList = gets (.multiList)
-
 getClientID :: App Int
-getClientID = gets (.clientID)
+getClientID = asks $ (.cfgID) . envConfig
 
 getSocket :: App Socket
-getSocket = gets (.socket)
+getSocket = asks $ (.cfgSocket) . envConfig
 
 newMemoryStore :: IO MemoryStore
 newMemoryStore = MemoryStore <$> newTVarIO M.empty <*> newTVarIO M.empty
@@ -131,3 +114,23 @@ getStream streamID filter = do
 
 setStreams :: MemoryStoreEntry -> App ()
 setStreams = setDataEntry "streams"
+
+----------------------------------------------------------------------------------
+-- ClientState
+
+updateMulti :: Bool -> App ()
+updateMulti state = modify' (\cs -> cs { multi = state })
+
+addMultiCommand :: App BS.ByteString -> App ()
+addMultiCommand cmd = do
+  ml <- gets (.multiList)
+  modify' (\cs -> cs { multiList = ml ++ [cmd] })
+
+resetMultiCommands :: App ()
+resetMultiCommands = modify' (\cs -> cs { multiList = [] })
+
+getMulti :: App Bool
+getMulti = gets (.multi)
+
+getMultiList :: App [App BS.ByteString]
+getMultiList = gets (.multiList)
