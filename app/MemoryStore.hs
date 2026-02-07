@@ -20,6 +20,7 @@ module MemoryStore
   , getStreams
   , getStream
   , setStreams
+  , getRole
   ) where
 
 import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar')
@@ -40,10 +41,10 @@ import Network.Simple.TCP (Socket)
 import qualified Data.ByteString as BS
 
 getData :: App (TVar (M.Map BS.ByteString MemoryStoreEntry))
-getData = asks (.msData)
+getData = asks $ (.msData) . envStore
 
 getWaiters :: App (TVar (M.Map BS.ByteString IS.IntSet))
-getWaiters = asks (.msBLPopWaiters )
+getWaiters = asks $ (.msBLPopWaiters) . envStore
 
 setDataEntry :: BS.ByteString -> MemoryStoreEntry -> App ()
 setDataEntry key value = do
@@ -82,6 +83,10 @@ getWaiterEntry key = do
   tv <- getWaiters
   liftIO $ M.lookup key <$> readTVarIO tv
 
+getRole :: App (Maybe ReplicaOf)
+getRole = do
+  asks $ (.cfgReplicaOf) . envConfig
+
 updateMulti :: Bool -> App ()
 updateMulti state = modify' (\cs -> cs { multi = state })
 
@@ -94,7 +99,7 @@ resetMultiCommands :: App ()
 resetMultiCommands = modify' (\cs -> cs { multiList = [] })
 
 getMulti :: App Bool
-getMulti = gets (.multi )
+getMulti = gets (.multi)
 
 getMultiList :: App [App BS.ByteString]
 getMultiList = gets (.multiList)

@@ -16,10 +16,11 @@ dependencies:
   - async # may help with concurrency
   - mtl # may help with structuring
   # Parsing libs
+  - optparse-applicative
   - megaparsec
-  - parser-combinators
-  - parsec
-  - attoparsec
+  # - parser-combinators
+  # - parsec
+  # - attoparsec
 
 executables:
   codecrafters-redis-exe:

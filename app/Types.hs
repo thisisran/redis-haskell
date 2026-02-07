@@ -1,12 +1,14 @@
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module Types
-  ( Parser
+  ( RedisParser
   , Command (..)
   , SetExpiry (..)
   , PushCommand (..)
   , EntryId (..)
   , RangeEntryId (..)
+  , InfoRequest (..)
   , App
   , ExpireDuration (..)
   , ExpireReference (..)
@@ -20,13 +22,15 @@ module Types
   , Stream (..)
   , Streams (..)
   , runApp
+  , Config (..)
+  , ReplicaOf (..)
+  , Env (..)
   ) where
 
 import Data.Void (Void)
 import Data.Word (Word64)
 import Network.Simple.TCP (Socket)
 import Text.Megaparsec (Parsec)
-
 
 import Control.Monad.Reader
 import Control.Monad.State.Strict
@@ -38,13 +42,20 @@ import qualified Data.IntSet as IS
 
 import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar')
 
-type Parser = Parsec Void BS.ByteString
+type RedisParser = Parsec Void BS.ByteString
 
 data SetExpiry = EX Int | PX Int
   deriving (Show, Eq)
 
 data PushCommand = RightPushCmd | LeftPushCmd
   deriving (Show, Eq)
+
+data InfoRequest = FullInfo
+                 | Server
+                 | Replication
+                 | Clients
+                 | Memory
+                 deriving (Eq, Show)
 
 data Command
   = Ping
@@ -65,6 +76,7 @@ data Command
   | Multi
   | Exec
   | Discard
+  | Info InfoRequest
   deriving (Show, Eq)
 
 data EntryId = EntryId !Word64 !Word64
@@ -107,6 +119,21 @@ data MemoryStore = MemoryStore
   , msBLPopWaiters :: TVar (M.Map BS.ByteString IS.IntSet)
   }
 
+data Env = Env
+  { envStore :: !MemoryStore
+  , envConfig :: !Config
+  }
+
+data ReplicaOf = ReplicaOf
+  { roHost :: !String
+  , roPort :: !String
+  } deriving stock (Eq, Show)
+
+data Config = Config
+  { cfgPort      :: !(Maybe String)
+  , cfgReplicaOf :: !(Maybe ReplicaOf)
+  } deriving stock (Eq, Show)
+
 data ClientState = ClientState
   { multi :: !Bool
   , multiList :: [App BS.ByteString]
@@ -114,11 +141,11 @@ data ClientState = ClientState
   , socket :: Socket
   }
 
-newtype App a = App { unApp :: ReaderT MemoryStore (StateT ClientState IO) a }
-  deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader MemoryStore)
+newtype App a = App { unApp :: ReaderT Env (StateT ClientState IO) a }
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader Env)
 
 -- newtype App a = App { unApp :: StateT ClientState (ReaderT MemoryStore IO) a}
 --   deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader MemoryStore)
 
-runApp  :: MemoryStore -> ClientState -> App a -> IO (a, ClientState)
+runApp  :: Env -> ClientState -> App a -> IO (a, ClientState)
 runApp store st = (`runStateT` st) . (`runReaderT` store) . unApp

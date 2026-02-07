@@ -10,7 +10,9 @@ import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, st
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Monad.IO.Class (liftIO)
+
 import Data.Word (Word64)
+import Data.Maybe (fromMaybe, isNothing)
 import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve)
 
 import qualified Data.ByteString as BS
@@ -24,7 +26,8 @@ import MemoryStore
 import qualified Utilities as U
 
 import Types
-import Parser
+import RedisParser
+import CliParser
 
 -- TODO: Eventually will need to turn it into a recursive function that will process all the arguments provided, not just 1 additional one
 setCommand :: BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> App BS.ByteString
@@ -343,6 +346,11 @@ handleMultiCmd op = do
     pure $ encodeSimpleString "QUEUED"
   else op
 
+infoCommand :: InfoRequest -> App BS.ByteString
+infoCommand Replication = do
+  role <- getRole
+  pure $ encodeBulkString $ "# Replication\nrole:" <> if isNothing role then "master" else "slave"
+
 handleConnection :: App ()
 handleConnection = go
   where
@@ -372,6 +380,7 @@ handleConnection = go
             Right Multi -> updateMulti True >> pure (encodeSimpleString "OK")
             Right Exec -> execCommand
             Right Discard -> discardCommand
+            Right (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
             Left e -> pure $ U.renderParseError e
           liftIO $ send sock resp
           go
@@ -396,11 +405,14 @@ main = do
   -- You can use print statements as follows for debugging, they'll be visible when running tests.
   -- hPutStrLn stderr "Logs from your program will appear here"
 
-  args <- getArgs
+  cfg <- parseConfig
   store <- newMemoryStore
+
+  let env = Env store cfg
+  
   nextID <- newTVarIO (0 :: Int)
 
-  let port = getPort "6379" args
+  let port = fromMaybe "6379" (cfgPort cfg)
   putStrLn $ "Redis server listening on port " ++ port
   serve HostAny port $ \(socket, address) -> do
     putStrLn $ "successfully connected client: " ++ show address
@@ -411,10 +423,5 @@ main = do
       pure i
 
     let cs = ClientState {multi = False, multiList = [], clientID = clientID, socket = socket }
-    runApp store cs handleConnection
+    runApp env cs handleConnection
     closeSock socket
-    
-  where
-    getPort def [] = def
-    getPort def ("--port" : port : _) = port
-  
