@@ -1,6 +1,5 @@
-{-# LANGUAGE NumericUnderscores #-}
-{-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 
 module Main (main) where
 
@@ -10,9 +9,10 @@ import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, st
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad (unless)
 
 import Data.Word (Word64)
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (fromMaybe, isNothing, isJust)
 import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve)
 
 import qualified Data.ByteString as BS
@@ -349,7 +349,10 @@ handleMultiCmd op = do
 infoCommand :: InfoRequest -> App BS.ByteString
 infoCommand Replication = do
   role <- getRole
-  pure $ encodeBulkString $ "# Replication\nrole:" <> if isNothing role then "master" else "slave"
+  case role of
+    Nothing -> pure $ encodeSimpleError "Error in INFO command"
+    Just (Master repID repOffset) -> pure $ encodeBulkString $ "# Replication\nrole:master\nmaster_replid:" <> BS8.pack repID <> "\nmaster_repl_offset:" <> (BS8.pack . show) repOffset
+    Just (Slave roHost roPort) -> pure $ encodeBulkString "# Replication\nrole:slave"
 
 handleConnection :: App ()
 handleConnection = go
@@ -385,18 +388,6 @@ handleConnection = go
           liftIO $ send sock resp
           go
 
-reversePairs :: [Int] -> Int
-reversePairs xs = go (indexPairs xs) 0
-  where
-    go [] c = c
-    go ((l,h):ys) c = if (xs !! l) > 2 * (xs !! h) then go ys (c+1) else go ys c
-    indexPairs xss = let len = length xss
-                     in go 0 len []
-                     where go :: Int -> Int  -> [(Int, Int)] -> [(Int, Int)]
-                           go ind l acc
-                             | ind == l-1 = acc
-                             | otherwise = go (ind+1) l $ acc ++ zip (replicate (l-ind-1) ind) [ind+1..l-1]
-
 main :: IO ()
 main = do
   hSetBuffering stdout NoBuffering
@@ -423,5 +414,13 @@ main = do
       pure i
 
     let cs = ClientState {multi = False, multiList = [], clientID = clientID, socket = socket }
-    runApp env cs handleConnection
+
+    repID <- U.randomAlphaNum40BS
+    case cfgReplication cfg of
+      Nothing -> runApp (setReplication (Just (Master (BS8.unpack repID) 0)) env) cs handleConnection
+                 where
+                   setReplication :: Maybe ReplicationInfo -> Env -> Env
+                   setReplication r e = e { envConfig = e.envConfig { cfgReplication = r } }
+      Just repl -> runApp env cs handleConnection
+-- usage
     closeSock socket

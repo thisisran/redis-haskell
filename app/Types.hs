@@ -23,7 +23,7 @@ module Types
   , Streams (..)
   , runApp
   , Config (..)
-  , ReplicaOf (..)
+  , ReplicationInfo (..)
   , Env (..)
   ) where
 
@@ -124,14 +124,13 @@ data Env = Env
   , envConfig :: !Config
   }
 
-data ReplicaOf = ReplicaOf
-  { roHost :: !String
-  , roPort :: !String
-  } deriving stock (Eq, Show)
+data ReplicationInfo = Master { repID :: !String, repOffset :: !Int }
+                     | Slave  { roHost :: !String, roPort :: !String }
+                     deriving stock (Eq, Show)
 
 data Config = Config
   { cfgPort      :: !(Maybe String)
-  , cfgReplicaOf :: !(Maybe ReplicaOf)
+  , cfgReplication :: !(Maybe ReplicationInfo)
   } deriving stock (Eq, Show)
 
 data ClientState = ClientState

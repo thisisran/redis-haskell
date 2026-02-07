@@ -83,9 +83,9 @@ getWaiterEntry key = do
   tv <- getWaiters
   liftIO $ M.lookup key <$> readTVarIO tv
 
-getRole :: App (Maybe ReplicaOf)
+getRole :: App (Maybe ReplicationInfo)
 getRole = do
-  asks $ (.cfgReplicaOf) . envConfig
+  asks $ (.cfgReplication) . envConfig
 
 updateMulti :: Bool -> App ()
 updateMulti state = modify' (\cs -> cs { multi = state })

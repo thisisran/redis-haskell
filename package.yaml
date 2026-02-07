@@ -2,6 +2,10 @@ name: codecrafters-redis
 version: 0.1.0.0
 license: BSD3
 
+default-extensions:
+  - OverloadedStrings
+  - NumericUnderscores
+
 dependencies:
   - base >= 4.19 && < 5
   - network-simple # establish a simple TCP network
@@ -11,6 +15,7 @@ dependencies:
   - stm # may help with a concurrent database
   - containers # may help with the database structure and debugging
   - unordered-containers
+  - random
   # - hashable
   - time # may help with the expiry function
   - async # may help with concurrency

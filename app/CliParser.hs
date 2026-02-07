@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module CliParser
   ( parseConfig
   ) where
@@ -16,11 +18,11 @@ configP =
     <$> optional (option str (long "port" <> metavar "PORT" <> help "Port to listen on"))
     <*> optional replicaOfP
 
-replicaOfP :: Parser ReplicaOf
+replicaOfP :: Parser ReplicationInfo
 replicaOfP =
   option (eitherReader parse)
     (long "replicaof" <> metavar "HOST PORT" <> help "Replica of upstream HOST PORT")
  where
   parse s = case words s of
-    [h,p] -> Right (ReplicaOf h p)
+    [h,p] -> Right (Slave h p)
     _     -> Left "Expected: --replicaof \"HOST PORT\""

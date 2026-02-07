@@ -8,9 +8,12 @@ module Utilities
   , entryIdToBS
   , range
   , renderParseError
+  , randomAlphaNum40BS
   ) where
 
-import Control.Monad (guard)
+import System.Random.Stateful (uniformRM, globalStdGen)
+
+import Control.Monad (replicateM, guard)
 import Data.Char (toLower)
 import Text.Megaparsec (errorBundlePretty,  ParseErrorBundle)
 import Text.Read (readMaybe)
@@ -70,3 +73,9 @@ renderParseError =
  BS8.pack . take 200 . oneLine . errorBundlePretty
  where
   oneLine = map (\c -> if c == '\n' || c == '\r' then ' ' else c)
+
+randomAlphaNum40BS :: IO BS.ByteString
+randomAlphaNum40BS = BS8.pack <$> replicateM 40 pick
+  where
+    alphabet = ['0'..'9'] <> ['A'..'Z'] <> ['a'..'z']
+    pick = (alphabet !!) <$> uniformRM (0, length alphabet - 1) globalStdGen
