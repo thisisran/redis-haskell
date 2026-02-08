@@ -429,7 +429,7 @@ runReplica = do
                 case runSimpleStringParse replResp1 of
                   Right "OK" -> do
                    liftIO $ putStrLn "Got confirmation form REPLCONF capability"
-
+                   liftIO $ send _sock $ encodeArray True ["PSYNC", "?", "-1"]
       pure mempty
     Master _ _ -> pure mempty
 
