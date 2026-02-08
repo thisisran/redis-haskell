@@ -10,6 +10,7 @@ module Types
   , RangeEntryId (..)
   , InfoRequest (..)
   , App
+  , ClientApp
   , ExpireDuration (..)
   , ExpireReference (..)
   , MemoryStoreValue (..)
@@ -22,11 +23,14 @@ module Types
   , Stream (..)
   , Streams (..)
   , runApp
-  , Config (..)
+  , runClientApp
+  , SharedConfig (..)
+  , ClientConfig (..)
   , CLIOptions (..)
   , ReplicationInfo (..)
   , ReplicationCmdOption (..)
-  , Env (..)
+  , SharedEnv (..)
+  , ClientEnv (..)
   ) where
 
 import Data.Void (Void)
@@ -134,28 +138,43 @@ data ReplicationInfo = Master { repID :: !String, repOffset :: !Int }
                      | Slave  { roHost :: !String, roPort :: !String }
                      deriving stock (Eq, Show)
 
-data Config = Config
+data SharedConfig = SharedConfig
   { cfgPort        :: !String
-  , cfgID          :: !Int
-  , cfgSocket      :: !Socket
   , cfgReplication :: !ReplicationInfo
   } deriving stock (Eq, Show)
 
-data Env = Env
-  { envStore :: !MemoryStore
-  , envConfig :: !Config
+data SharedEnv = SharedEnv
+  { senvStore  :: !MemoryStore
+  , senvConfig :: !SharedConfig
+  }
+
+data ClientConfig = ClientConfig
+  { ccfgID     :: !Int
+  , ccfgSocket :: !Socket
+  , ccfgShared :: !SharedConfig
+  }
+
+data ClientEnv = ClientEnv
+  { cenvShared :: !SharedEnv
+  , cenvConfig :: !ClientConfig
   }
 
 data ClientState = ClientState
   { multi :: !Bool
-  , multiList :: [App BS.ByteString]
+  , multiList :: [ClientApp BS.ByteString]
   }
 
-newtype App a = App { unApp :: ReaderT Env (StateT ClientState IO) a }
-  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader Env)
+newtype App a = App { unApp :: ReaderT SharedEnv IO a }
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader SharedEnv)
+
+newtype ClientApp a = ClientApp { unClientApp :: StateT ClientState (ReaderT ClientEnv IO) a }
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader ClientEnv, MonadState ClientState)
 
 -- newtype App a = App { unApp :: StateT ClientState (ReaderT MemoryStore IO) a}
 --   deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader MemoryStore)
 
-runApp  :: Env -> ClientState -> App a -> IO (a, ClientState)
-runApp store st = (`runStateT` st) . (`runReaderT` store) . unApp
+runApp  :: SharedEnv -> App a -> IO a
+runApp env = (`runReaderT` env) . unApp
+
+runClientApp :: ClientEnv -> ClientState -> ClientApp a -> IO (a, ClientState)
+runClientApp env st = (`runReaderT` env) . (`runStateT` st) . unClientApp

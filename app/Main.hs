@@ -1,19 +1,19 @@
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
-{-# LANGUAGE OverloadedRecordDot #-}
 
 module Main (main) where
 
 import System.Environment (getArgs)
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 
+import Control.Concurrent.Async (async)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad (unless)
+import Control.Monad (unless, void)
 
 import Data.Word (Word64)
 import Data.Maybe (fromMaybe, isNothing, isJust)
-import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve)
+import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve, connect)
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -30,7 +30,7 @@ import RedisParser
 import CliParser
 
 -- TODO: Eventually will need to turn it into a recursive function that will process all the arguments provided, not just 1 additional one
-setCommand :: BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> App BS.ByteString
+setCommand :: BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> ClientApp BS.ByteString
 setCommand key val ex = do
   now <- liftIO U.nowNs
   setDataEntry key $ handleExpiry ex now
@@ -40,7 +40,7 @@ setCommand key val ex = do
     handleExpiry (Just (EX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral $ ex * 1_000_000), ExpireReference timeRef)
     handleExpiry (Just (PX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral ex), ExpireReference timeRef)
 
-getCommand :: BS.ByteString -> App BS.ByteString
+getCommand :: BS.ByteString -> ClientApp BS.ByteString
 getCommand key = do
   tv <- getDataEntry key
   case tv of
@@ -54,7 +54,7 @@ getCommand key = do
           pure encodeNullBulkString
         else pure $ encodeBulkString v
 
-pushCommand :: BS.ByteString -> [BS.ByteString] -> PushCommand -> App BS.ByteString
+pushCommand :: BS.ByteString -> [BS.ByteString] -> PushCommand -> ClientApp BS.ByteString
 pushCommand key values pushType = do
   val <- getDataEntry key
   let valuesCount = length values
@@ -71,7 +71,7 @@ pushCommand key values pushType = do
     newList RightPushCmd oldList = oldList ++ values
     newList LeftPushCmd oldList = reverse values ++ oldList
 
-lrangeCommand :: BS.ByteString -> Int -> Int -> App BS.ByteString
+lrangeCommand :: BS.ByteString -> Int -> Int -> ClientApp BS.ByteString
 lrangeCommand key start stop = do
   val <- getDataEntry key
   case val of
@@ -93,14 +93,14 @@ lrangeCommand key start stop = do
           | -index > itemCount = 0
           | otherwise = itemCount + index
 
-llenCommand :: BS.ByteString -> App BS.ByteString
+llenCommand :: BS.ByteString -> ClientApp BS.ByteString
 llenCommand key = do
   val <- getDataEntry key
   case val of
     Nothing -> pure $ encodeInteger 0
     Just (MemoryStoreEntry (MSListVal v) Nothing) -> pure $ encodeInteger $ length v
 
-lpopHelper :: BS.ByteString -> Int -> App BS.ByteString
+lpopHelper :: BS.ByteString -> Int -> ClientApp BS.ByteString
 lpopHelper key count = do
   val <- getDataEntry key
   socket <- getSocket
@@ -118,10 +118,10 @@ lpopHelper key count = do
             getPopped 1 (x : _) = encodeBulkString x
             getPopped popCount xs = encodeArray True (take popCount xs)
 
-lpopCommand :: BS.ByteString -> Int -> App BS.ByteString
+lpopCommand :: BS.ByteString -> Int -> ClientApp BS.ByteString
 lpopCommand = lpopHelper
 
-blpopCommand :: BS.ByteString -> Double -> Int -> App BS.ByteString
+blpopCommand :: BS.ByteString -> Double -> Int -> ClientApp BS.ByteString
 blpopCommand key timeout clientID = go 0
   where
     go elapsed
@@ -155,7 +155,7 @@ blpopCommand key timeout clientID = go 0
       liftIO $ threadDelay 1_000
       go $ elapsed + 0.001
 
-typeCommand :: BS.ByteString -> App BS.ByteString
+typeCommand :: BS.ByteString -> ClientApp BS.ByteString
 typeCommand key = do
   val <- getDataEntry key
   case val of
@@ -167,7 +167,7 @@ typeCommand key = do
     Just (MemoryStoreEntry (MSStringVal _) _) -> pure $ encodeSimpleString "string"
     Just (MemoryStoreEntry (MSListVal _) _) -> pure $ encodeSimpleString "list"
 
-xaddCommand :: BS.ByteString -> EntryId -> RedisStreamValues -> App BS.ByteString
+xaddCommand :: BS.ByteString -> EntryId -> RedisStreamValues -> ClientApp BS.ByteString
 xaddCommand streamID (EntryId 0 0) values = pure $ encodeSimpleError "The ID specified in XADD must be greater than 0-0"
 xaddCommand streamID EntryGenNew values = liftIO U.nowNs >>= \now -> xaddCommand streamID (EntryGenSeq (fromIntegral now)) values
 xaddCommand streamID (EntryGenSeq mili) values = do
@@ -184,7 +184,7 @@ xaddCommand streamID entryID@(EntryId mili seq) values = do
         then pure $ encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item"
         else addNewEntry oldStream streams
   where
-    addNewEntry :: M.Map EntryId RedisStreamValues -> RedisStreams -> App BS.ByteString
+    addNewEntry :: M.Map EntryId RedisStreamValues -> RedisStreams -> ClientApp BS.ByteString
     addNewEntry oldStream (Streams streams) = do
       let newEntry = values
       let newStream = Stream (M.insert entryID newEntry oldStream)
@@ -192,14 +192,14 @@ xaddCommand streamID entryID@(EntryId mili seq) values = do
       setStreams (MemoryStoreEntry (MSStreams (Streams newStreams)) Nothing)
       pure $ encodeBulkString (U.entryIdToBS entryID)
 
-xrangeEndHelper :: BS.ByteString -> (EntryId -> RedisStreamValues -> Bool) -> App (Maybe RangeEntryId)
+xrangeEndHelper :: BS.ByteString -> (EntryId -> RedisStreamValues -> Bool) -> ClientApp (Maybe RangeEntryId)
 xrangeEndHelper key f = do
   (filteredStream, _, streams) <- getStream key (M.lookupMax . M.filterWithKey f)
   case filteredStream of
     Nothing -> pure Nothing
     Just (EntryId m v, _) -> pure $ Just (RangeEntryId m v)
 
-xrangeHelper :: BS.ByteString -> (EntryId -> EntryId -> Bool) -> RangeEntryId -> RangeEntryId -> App BS.ByteString
+xrangeHelper :: BS.ByteString -> (EntryId -> EntryId -> Bool) -> RangeEntryId -> RangeEntryId -> ClientApp BS.ByteString
 xrangeHelper key rangef (RangeEntryId mili1 mili2) (RangeEntryId seq1 seq2) = do
   (_, Stream oldStream, _) <- getStream key (const Nothing . M.filterWithKey (\_ _ -> True))
   -- putStrLn $ show ((M.takeWhileAntitone (<= (EntryId 1526985054079 0)) $ M.dropWhileAntitone ((<=) (EntryId 1526985054069 0)) oldStream))
@@ -220,7 +220,7 @@ xrangeHelper key rangef (RangeEntryId mili1 mili2) (RangeEntryId seq1 seq2) = do
         <> "\r\n"
         <> foldr (\(k, v) acc -> encodeBulkString k <> encodeBulkString v <> acc) BS.empty l
 
-xrangeCommand :: BS.ByteString -> RangeEntryId -> RangeEntryId -> App BS.ByteString
+xrangeCommand :: BS.ByteString -> RangeEntryId -> RangeEntryId -> ClientApp BS.ByteString
 xrangeCommand key mili RangeMinusPlus = do
   res <- xrangeEndHelper key (\_ _ -> True)
   case res of
@@ -244,11 +244,11 @@ xrangeCommand key (RangeMili mili) (RangeMili seq) = do
     Just (RangeEntryId _ newEnd) -> xrangeCommand key (RangeEntryId mili 0) (RangeEntryId seq newEnd)
 xrangeCommand key mili@(RangeEntryId _ _) seq@(RangeEntryId _ _) = xrangeHelper key (<) mili seq
 
-xreadEntriesAvailable :: [(BS.ByteString, RangeEntryId)] -> App (Bool, [(BS.ByteString, RangeEntryId)])
+xreadEntriesAvailable :: [(BS.ByteString, RangeEntryId)] -> ClientApp (Bool, [(BS.ByteString, RangeEntryId)])
 xreadEntriesAvailable keyIds = do
   go keyIds []
   where
-    go :: [(BS.ByteString, RangeEntryId)] -> [(BS.ByteString, RangeEntryId)] -> App (Bool, [(BS.ByteString, RangeEntryId)])
+    go :: [(BS.ByteString, RangeEntryId)] -> [(BS.ByteString, RangeEntryId)] -> ClientApp (Bool, [(BS.ByteString, RangeEntryId)])
     go [] newIds = pure (False, newIds)
     go wholelist@(entry@(key, entry_id) : xs) newIds = do
       res <- xrangeEndHelper key (\_ _ -> True)
@@ -260,7 +260,7 @@ xreadEntriesAvailable keyIds = do
           (_, Stream oldStream, _) <- getStream key (const Nothing . M.filterWithKey (\_ _ -> True))
           getRange entry_id endMili endSeq oldStream
           where
-            getRange :: RangeEntryId -> Word64 -> Word64 -> M.Map EntryId RedisStreamValues -> App (Bool, [(BS.ByteString, RangeEntryId)])
+            getRange :: RangeEntryId -> Word64 -> Word64 -> M.Map EntryId RedisStreamValues -> ClientApp (Bool, [(BS.ByteString, RangeEntryId)])
             getRange (RangeEntryId startMili startSeq) endMili endSeq oldStream = do
               let allKeysValues = U.range (<=) (EntryId startMili startSeq) (EntryId endMili endSeq) oldStream
               if null allKeysValues then go xs (newIds ++ [entry]) else pure (True, newIds ++ [entry])
@@ -268,7 +268,7 @@ xreadEntriesAvailable keyIds = do
               let updatedEntry = (key, RangeEntryId endMili endSeq)
               go xs (newIds ++ [updatedEntry])
 
-xreadCommand :: [(BS.ByteString, RangeEntryId)] -> Maybe Double -> App BS.ByteString
+xreadCommand :: [(BS.ByteString, RangeEntryId)] -> Maybe Double -> ClientApp BS.ByteString
 xreadCommand keysIds (Just timeout) = go 0 keysIds
   where
     go elapsed ids = do
@@ -285,7 +285,7 @@ xreadCommand keysIds Nothing = do
   result <- go keysIds BS.empty 0
   pure $ "*" <> (BS8.pack . show . length) keysIds <> "\r\n" <> result
   where
-    go :: [(BS.ByteString, RangeEntryId)] -> BS.ByteString -> Double -> App BS.ByteString
+    go :: [(BS.ByteString, RangeEntryId)] -> BS.ByteString -> Double -> ClientApp BS.ByteString
     go [] acc elapsed = pure acc
     go ((stream_id, entry_id) : xs) acc elapsed = do
       res <- xrangeEndHelper stream_id (\_ _ -> True)
@@ -295,7 +295,7 @@ xreadCommand keysIds Nothing = do
           streamResp <- xrangeHelper stream_id (<=) entry_id seq
           go xs (acc <> "*2\r\n" <> encodeBulkString stream_id <> streamResp) elapsed
 
-incrCommand :: BS.ByteString -> App BS.ByteString
+incrCommand :: BS.ByteString -> ClientApp BS.ByteString
 incrCommand key = do
   val <- getDataEntry key
   case val of
@@ -308,7 +308,7 @@ incrCommand key = do
         setDataEntry key (MemoryStoreEntry (MSStringVal $ (BS8.pack . show) (i + 1)) Nothing)
         pure $ encodeInteger (i + 1)
 
-execCommand :: App BS.ByteString
+execCommand :: ClientApp BS.ByteString
 execCommand = do
   multi <- getMulti
   updateMulti False
@@ -322,13 +322,13 @@ execCommand = do
       res <- go ml []
       pure $ encodeArray False res
   else pure $ encodeSimpleError "EXEC without MULTI"
-  where go :: [App BS.ByteString] -> [BS.ByteString] -> App [BS.ByteString]
+  where go :: [ClientApp BS.ByteString] -> [BS.ByteString] -> ClientApp [BS.ByteString]
         go [] acc = pure acc
         go (x:xs) acc = do
            resp <- x
            go xs (acc ++ [resp])
 
-discardCommand :: App BS.ByteString
+discardCommand :: ClientApp BS.ByteString
 discardCommand = do
   multi <- getMulti
   if multi
@@ -338,7 +338,7 @@ discardCommand = do
     pure $ encodeSimpleString "OK"
   else pure $ encodeSimpleError "DISCARD without MULTI"
 
-handleMultiCmd :: App BS.ByteString -> App BS.ByteString
+handleMultiCmd :: ClientApp BS.ByteString -> ClientApp BS.ByteString
 handleMultiCmd op = do
   multi <- getMulti
   if multi
@@ -347,16 +347,17 @@ handleMultiCmd op = do
     pure $ encodeSimpleString "QUEUED"
   else op
 
-infoCommand :: InfoRequest -> App BS.ByteString
+infoCommand :: InfoRequest -> ClientApp BS.ByteString
 infoCommand Replication = do
   role <- getRole
   case role of
     Master repID repOffset -> pure $ encodeBulkString $ "# Replication\nrole:master\nmaster_replid:" <> BS8.pack repID <> "\nmaster_repl_offset:" <> (BS8.pack . show) repOffset
     Slave roHost roPort -> pure $ encodeBulkString "# Replication\nrole:slave"
 
-handleConnection :: App ()
+handleConnection :: ClientApp ()
 handleConnection = go
   where
+    go :: ClientApp ()
     go = do
       sock <- getSocket
       clientID <- getClientID
@@ -388,6 +389,16 @@ handleConnection = go
           liftIO $ send sock resp
           go
 
+runReplica :: App ()
+runReplica = do
+  repl <- getReplication
+  case repl of
+    Slave host port -> do
+      _ <- liftIO $ async $ connect host port $ \(_sock, _addr) -> do
+        send _sock $ encodeArray True ["PING"]
+        -- threadDelay maxBound
+      pure ()
+    Master _ _ -> pure ()
 
 main :: IO ()
 main = do
@@ -403,6 +414,17 @@ main = do
 
   let port = fromMaybe "6379" (cliPort cfgCli)
 
+  repID <- U.randomAlphaNum40BS
+  let sharedCfg = case cliReplication cfgCli of
+              WantMaster -> SharedConfig port (Master (BS8.unpack repID) 0)
+              WantSlave wantHost wantPort -> SharedConfig port (Slave wantHost wantPort)
+
+  let sharedEnv = SharedEnv store sharedCfg
+
+  case sharedCfg of
+    SharedConfig _ (Master _ _) -> pure ()
+    SharedConfig _ (Slave _ _) -> runApp sharedEnv runReplica
+    
   putStrLn $ "Redis server listening on port " ++ port
   serve HostAny port $ \(socket, address) -> do
     putStrLn $ "successfully connected client: " ++ show address
@@ -414,12 +436,8 @@ main = do
 
     let cs = ClientState {multi = False, multiList = [] }
 
-    repID <- U.randomAlphaNum40BS
-    let cfg = case cliReplication cfgCli of
-                WantMaster -> Config port clientID socket (Master (BS8.unpack repID) 0)
-                WantSlave wantHost wantPort -> Config port clientID socket (Slave wantHost wantPort)
+    let clientCfg = ClientConfig clientID socket sharedCfg
+    let env = ClientEnv sharedEnv clientCfg
 
-    let env = Env store cfg
-
-    runApp env cs handleConnection
+    runClientApp env cs handleConnection
     closeSock socket

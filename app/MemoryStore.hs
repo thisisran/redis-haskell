@@ -3,6 +3,7 @@
 
 module MemoryStore
   ( getSocket
+  , getReplication
   , getClientID
   , getMulti
   , getMultiList
@@ -40,23 +41,23 @@ import Network.Simple.TCP (Socket)
 
 import qualified Data.ByteString as BS
 
-getData :: App (TVar (M.Map BS.ByteString MemoryStoreEntry))
-getData = asks $ (.msData) . envStore
+getData :: ClientApp (TVar (M.Map BS.ByteString MemoryStoreEntry))
+getData = asks $ (.msData) . senvStore . cenvShared
 
-getWaiters :: App (TVar (M.Map BS.ByteString IS.IntSet))
-getWaiters = asks $ (.msBLPopWaiters) . envStore
+getWaiters :: ClientApp (TVar (M.Map BS.ByteString IS.IntSet))
+getWaiters = asks $ (.msBLPopWaiters) . senvStore . cenvShared
 
-setDataEntry :: BS.ByteString -> MemoryStoreEntry -> App ()
+setDataEntry :: BS.ByteString -> MemoryStoreEntry -> ClientApp ()
 setDataEntry key value = do
   tv <- getData
   liftIO . atomically $ modifyTVar' tv (M.insert key value)
 
-getDataEntry :: BS.ByteString -> App (Maybe MemoryStoreEntry)
+getDataEntry :: BS.ByteString -> ClientApp (Maybe MemoryStoreEntry)
 getDataEntry key = do
   tv <- getData
   liftIO $ M.lookup key <$> readTVarIO tv
 
-delDataEntry :: BS.ByteString -> App ()
+delDataEntry :: BS.ByteString -> ClientApp ()
 delDataEntry key = do
   tv <- getData
   liftIO . atomically $ do
@@ -64,7 +65,7 @@ delDataEntry key = do
     let m1 = M.delete key m0
     writeTVar tv m1
 
-delWaiterEntry :: BS.ByteString -> App ()
+delWaiterEntry :: BS.ByteString -> ClientApp ()
 delWaiterEntry key = do
   tv <- getWaiters
   liftIO . atomically $ do
@@ -72,31 +73,33 @@ delWaiterEntry key = do
     let m1 = M.delete key m0
     writeTVar tv m1
 
-addWaiterOnce :: BS.ByteString -> Int -> App ()
+addWaiterOnce :: BS.ByteString -> Int -> ClientApp ()
 addWaiterOnce k w = do
   tv <- getWaiters
   liftIO . atomically $
     modifyTVar' tv (M.insertWith IS.union k (IS.singleton w))
 
-getWaiterEntry :: BS.ByteString -> App (Maybe IS.IntSet)
+getWaiterEntry :: BS.ByteString -> ClientApp (Maybe IS.IntSet)
 getWaiterEntry key = do
   tv <- getWaiters
   liftIO $ M.lookup key <$> readTVarIO tv
 
-getRole :: App ReplicationInfo
-getRole = do
-  asks $ (.cfgReplication) . envConfig
+getRole :: ClientApp ReplicationInfo
+getRole = asks $ (.cfgReplication) . ccfgShared . cenvConfig
 
-getClientID :: App Int
-getClientID = asks $ (.cfgID) . envConfig
+getClientID :: ClientApp Int
+getClientID = asks $ (.ccfgID) . cenvConfig
 
-getSocket :: App Socket
-getSocket = asks $ (.cfgSocket) . envConfig
+getSocket :: ClientApp Socket
+getSocket = asks $ (.ccfgSocket) . cenvConfig
+
+getReplication :: App ReplicationInfo
+getReplication = asks $ (.cfgReplication) . senvConfig
 
 newMemoryStore :: IO MemoryStore
 newMemoryStore = MemoryStore <$> newTVarIO M.empty <*> newTVarIO M.empty
 
-getStreams :: App RedisStreams
+getStreams :: ClientApp RedisStreams
 getStreams = do
   streams <- getDataEntry "streams"
   pure $ case streams of
@@ -106,31 +109,31 @@ getStreams = do
 getStream ::
   BS.ByteString ->
   (M.Map EntryId RedisStreamValues -> Maybe (EntryId, RedisStreamValues)) ->
-  App (Maybe (EntryId, RedisStreamValues), RedisStream, RedisStreams)
+  ClientApp (Maybe (EntryId, RedisStreamValues), RedisStream, RedisStreams)
 getStream streamID filter = do
   s@(Streams streams) <- getStreams
   let os@(Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
   pure (filter oldStream, os, s)
 
-setStreams :: MemoryStoreEntry -> App ()
+setStreams :: MemoryStoreEntry -> ClientApp ()
 setStreams = setDataEntry "streams"
 
 ----------------------------------------------------------------------------------
 -- ClientState
 
-updateMulti :: Bool -> App ()
+updateMulti :: Bool -> ClientApp ()
 updateMulti state = modify' (\cs -> cs { multi = state })
 
-addMultiCommand :: App BS.ByteString -> App ()
+addMultiCommand :: ClientApp BS.ByteString -> ClientApp ()
 addMultiCommand cmd = do
   ml <- gets (.multiList)
   modify' (\cs -> cs { multiList = ml ++ [cmd] })
 
-resetMultiCommands :: App ()
+resetMultiCommands :: ClientApp ()
 resetMultiCommands = modify' (\cs -> cs { multiList = [] })
 
-getMulti :: App Bool
+getMulti :: ClientApp Bool
 getMulti = gets (.multi)
 
-getMultiList :: App [App BS.ByteString]
+getMultiList :: ClientApp [ClientApp BS.ByteString]
 getMultiList = gets (.multiList)
