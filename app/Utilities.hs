@@ -9,6 +9,7 @@ module Utilities
   , range
   , renderParseError
   , randomAlphaNum40BS
+  , decodeRdbBase64
   ) where
 
 import System.Random.Stateful (uniformRM, globalStdGen)
@@ -19,12 +20,15 @@ import Text.Megaparsec (errorBundlePretty,  ParseErrorBundle)
 import Text.Read (readMaybe)
 
 import Data.Void (Void)
+import Data.Bits ((.&.))
 
 import qualified Data.Map.Strict as M
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Builder as BB
+import qualified Data.ByteString.Base64 as B64
+import qualified Data.ByteString.Base64.URL as B64URL
 import qualified Data.ByteString.Lazy as BSL
 
 import Types (EntryId (..))
@@ -79,3 +83,19 @@ randomAlphaNum40BS = BS8.pack <$> replicateM 40 pick
   where
     alphabet = ['0'..'9'] <> ['A'..'Z'] <> ['a'..'z']
     pick = (alphabet !!) <$> uniformRM (0, length alphabet - 1) globalStdGen
+
+decodeRdbBase64 :: BS.ByteString -> Either String BS.ByteString
+decodeRdbBase64 input =
+  let cleaned = pad (BS.filter (not . isWS) input)
+  in case B64.decode cleaned of
+       Right x -> Right x
+       Left _  -> B64URL.decode cleaned
+  where
+    isWS w = w == 9 || w == 10 || w == 13 || w == 32
+    pad bs =
+      let r = BS.length bs .&. 3
+      in bs <> case r of
+           0 -> ""
+           2 -> "=="
+           3 -> "="
+           _ -> bs

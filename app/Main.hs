@@ -30,54 +30,54 @@ import RedisParser
 import CliParser
 
 -- TODO: Eventually will need to turn it into a recursive function that will process all the arguments provided, not just 1 additional one
-setCommand :: BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> ClientApp BS.ByteString
+setCommand :: BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> ClientApp Response
 setCommand key val ex = do
   now <- liftIO U.nowNs
   setDataEntry key $ handleExpiry ex now
-  pure $ encodeSimpleString "OK"
+  pure $ Response (encodeSimpleString "OK") emptyResponse
   where
     handleExpiry Nothing timeRef = MemoryStoreEntry (MSStringVal val) Nothing
     handleExpiry (Just (EX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral $ ex * 1_000_000), ExpireReference timeRef)
     handleExpiry (Just (PX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral ex), ExpireReference timeRef)
 
-getCommand :: BS.ByteString -> ClientApp BS.ByteString
+getCommand :: BS.ByteString -> ClientApp Response
 getCommand key = do
   tv <- getDataEntry key
   case tv of
-    Nothing -> pure encodeNullBulkString
-    Just (MemoryStoreEntry (MSStringVal v) Nothing) -> pure $ encodeBulkString v
+    Nothing -> pure $ Response encodeNullBulkString emptyResponse
+    Just (MemoryStoreEntry (MSStringVal v) Nothing) -> pure $ Response (encodeBulkString v) emptyResponse
     Just (MemoryStoreEntry (MSStringVal v) (Just (ExpireDuration exDur, ExpireReference exRef))) -> do
       hasPassed <- liftIO $ U.hasElapsedSince exDur exRef
       if hasPassed
         then do
           delDataEntry key
-          pure encodeNullBulkString
-        else pure $ encodeBulkString v
+          pure $ Response encodeNullBulkString emptyResponse
+        else pure $ Response (encodeBulkString v) emptyResponse
 
-pushCommand :: BS.ByteString -> [BS.ByteString] -> PushCommand -> ClientApp BS.ByteString
+pushCommand :: BS.ByteString -> [BS.ByteString] -> PushCommand -> ClientApp Response
 pushCommand key values pushType = do
   val <- getDataEntry key
   let valuesCount = length values
   case val of
     Nothing -> do
       setDataEntry key (MemoryStoreEntry (MSListVal $ newItems pushType) Nothing)
-      pure $ encodeInteger valuesCount
+      pure $ Response (encodeInteger valuesCount) emptyResponse
     Just (MemoryStoreEntry (MSListVal vs) Nothing) -> do
       setDataEntry key (MemoryStoreEntry (MSListVal $ newList pushType vs) Nothing)
-      pure $ encodeInteger (length vs + valuesCount)
+      pure $ Response (encodeInteger (length vs + valuesCount)) emptyResponse
   where
     newItems RightPushCmd = values
     newItems LeftPushCmd = reverse values
     newList RightPushCmd oldList = oldList ++ values
     newList LeftPushCmd oldList = reverse values ++ oldList
 
-lrangeCommand :: BS.ByteString -> Int -> Int -> ClientApp BS.ByteString
+lrangeCommand :: BS.ByteString -> Int -> Int -> ClientApp Response
 lrangeCommand key start stop = do
   val <- getDataEntry key
   case val of
-    Nothing -> pure $ encodeArray True []
+    Nothing -> pure $ Response (encodeArray True []) emptyResponse
     Just (MemoryStoreEntry (MSListVal vs) Nothing) -> do
-      pure $ encodeArray True $ go vs (normStart start) (normStop stop)
+      pure $ Response (encodeArray True $ go vs (normStart start) (normStop stop)) emptyResponse
       where
         itemCount = fromIntegral $ length vs
         go :: [BS.ByteString] -> Int -> Int -> [BS.ByteString]
@@ -93,40 +93,40 @@ lrangeCommand key start stop = do
           | -index > itemCount = 0
           | otherwise = itemCount + index
 
-llenCommand :: BS.ByteString -> ClientApp BS.ByteString
+llenCommand :: BS.ByteString -> ClientApp Response
 llenCommand key = do
   val <- getDataEntry key
   case val of
-    Nothing -> pure $ encodeInteger 0
-    Just (MemoryStoreEntry (MSListVal v) Nothing) -> pure $ encodeInteger $ length v
+    Nothing -> pure $ Response (encodeInteger 0) emptyResponse
+    Just (MemoryStoreEntry (MSListVal v) Nothing) -> pure $ Response (encodeInteger $ length v) emptyResponse
 
-lpopHelper :: BS.ByteString -> Int -> ClientApp BS.ByteString
+lpopHelper :: BS.ByteString -> Int -> ClientApp Response
 lpopHelper key count = do
   val <- getDataEntry key
   socket <- getSocket
   case val of
-    Nothing -> pure encodeNullBulkString
+    Nothing -> pure $ Response encodeNullBulkString emptyResponse
     Just (MemoryStoreEntry (MSListVal v) Nothing) ->
       let normCount = min count $ length v
       in go v socket normCount
       where
-        go [] socket _ = pure encodeNullBulkString
+        go [] socket _ = pure $ Response encodeNullBulkString emptyResponse
         go xs socket c = do
           setDataEntry key (MemoryStoreEntry (MSListVal (drop c xs)) Nothing)
-          pure $ getPopped c v
+          pure $ Response (getPopped c v) emptyResponse
           where
             getPopped 1 (x : _) = encodeBulkString x
             getPopped popCount xs = encodeArray True (take popCount xs)
 
-lpopCommand :: BS.ByteString -> Int -> ClientApp BS.ByteString
+lpopCommand :: BS.ByteString -> Int -> ClientApp Response
 lpopCommand = lpopHelper
 
-blpopCommand :: BS.ByteString -> Double -> Int -> ClientApp BS.ByteString
+blpopCommand :: BS.ByteString -> Double -> Int -> ClientApp Response
 blpopCommand key timeout clientID = go 0
   where
     go elapsed
       | elapsed > timeout && timeout > 0 = do
-          pure encodeNullArray
+          pure $ Response encodeNullArray emptyResponse
       | otherwise = do
           val <- getDataEntry key
           case val of
@@ -140,14 +140,14 @@ blpopCommand key timeout clientID = go 0
               waiters <- getWaiterEntry key
               case waiters of
                 Nothing -> do
-                  resp <- lpopHelper key 1
-                  pure $ encodeArray False [encodeBulkString key, resp]
+                  (Response resp _) <- lpopHelper key 1
+                  pure $ Response (encodeArray False [encodeBulkString key, resp]) emptyResponse
                 Just waitersList -> do
                   if IS.member clientID waitersList
                     then do
-                      resp <- lpopHelper key 1
+                      (Response resp _) <- lpopHelper key 1
                       delWaiterEntry key
-                      pure $ encodeArray False [encodeBulkString key, resp]
+                      pure $ Response (encodeArray False [encodeBulkString key, resp]) emptyResponse
                     else do
                       addWaiterOnce key clientID
                       waitAndContinue elapsed
@@ -155,20 +155,20 @@ blpopCommand key timeout clientID = go 0
       liftIO $ threadDelay 1_000
       go $ elapsed + 0.001
 
-typeCommand :: BS.ByteString -> ClientApp BS.ByteString
+typeCommand :: BS.ByteString -> ClientApp Response
 typeCommand key = do
   val <- getDataEntry key
   case val of
     Nothing -> do
       (Streams streams) <- getStreams
       case HM.lookup key streams of
-        Just _ -> pure $ encodeSimpleString "stream"
-        Nothing -> pure $ encodeSimpleString "none"
-    Just (MemoryStoreEntry (MSStringVal _) _) -> pure $ encodeSimpleString "string"
-    Just (MemoryStoreEntry (MSListVal _) _) -> pure $ encodeSimpleString "list"
+        Just _ -> pure $ Response (encodeSimpleString "stream") emptyResponse
+        Nothing -> pure $ Response (encodeSimpleString "none") emptyResponse
+    Just (MemoryStoreEntry (MSStringVal _) _) -> pure $ Response (encodeSimpleString "string") emptyResponse
+    Just (MemoryStoreEntry (MSListVal _) _) -> pure $ Response (encodeSimpleString "list") emptyResponse
 
-xaddCommand :: BS.ByteString -> EntryId -> RedisStreamValues -> ClientApp BS.ByteString
-xaddCommand streamID (EntryId 0 0) values = pure $ encodeSimpleError "The ID specified in XADD must be greater than 0-0"
+xaddCommand :: BS.ByteString -> EntryId -> RedisStreamValues -> ClientApp Response
+xaddCommand streamID (EntryId 0 0) values = pure $ Response (encodeSimpleError "The ID specified in XADD must be greater than 0-0") emptyResponse
 xaddCommand streamID EntryGenNew values = liftIO U.nowNs >>= \now -> xaddCommand streamID (EntryGenSeq (fromIntegral now)) values
 xaddCommand streamID (EntryGenSeq mili) values = do
   (filteredStream, _, _) <- getStream streamID (M.lookupMax . M.filterWithKey (\(EntryId m _) _ -> m == mili))
@@ -181,16 +181,16 @@ xaddCommand streamID entryID@(EntryId mili seq) values = do
     Nothing -> addNewEntry M.empty streams
     Just (x, _) ->
       if x >= entryID
-        then pure $ encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item"
+        then pure $ Response (encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item") emptyResponse
         else addNewEntry oldStream streams
   where
-    addNewEntry :: M.Map EntryId RedisStreamValues -> RedisStreams -> ClientApp BS.ByteString
+    addNewEntry :: M.Map EntryId RedisStreamValues -> RedisStreams -> ClientApp Response
     addNewEntry oldStream (Streams streams) = do
       let newEntry = values
       let newStream = Stream (M.insert entryID newEntry oldStream)
       let newStreams = HM.insert streamID newStream streams
       setStreams (MemoryStoreEntry (MSStreams (Streams newStreams)) Nothing)
-      pure $ encodeBulkString (U.entryIdToBS entryID)
+      pure $ Response (encodeBulkString (U.entryIdToBS entryID)) emptyResponse
 
 xrangeEndHelper :: BS.ByteString -> (EntryId -> RedisStreamValues -> Bool) -> ClientApp (Maybe RangeEntryId)
 xrangeEndHelper key f = do
@@ -199,13 +199,13 @@ xrangeEndHelper key f = do
     Nothing -> pure Nothing
     Just (EntryId m v, _) -> pure $ Just (RangeEntryId m v)
 
-xrangeHelper :: BS.ByteString -> (EntryId -> EntryId -> Bool) -> RangeEntryId -> RangeEntryId -> ClientApp BS.ByteString
+xrangeHelper :: BS.ByteString -> (EntryId -> EntryId -> Bool) -> RangeEntryId -> RangeEntryId -> ClientApp Response
 xrangeHelper key rangef (RangeEntryId mili1 mili2) (RangeEntryId seq1 seq2) = do
   (_, Stream oldStream, _) <- getStream key (const Nothing . M.filterWithKey (\_ _ -> True))
   -- putStrLn $ show ((M.takeWhileAntitone (<= (EntryId 1526985054079 0)) $ M.dropWhileAntitone ((<=) (EntryId 1526985054069 0)) oldStream))
   let allKeysValues = M.toAscList (U.range rangef (EntryId mili1 mili2) (EntryId seq1 seq2) oldStream)
   let resp = parseKeysValues allKeysValues
-  pure resp
+  pure $ Response resp emptyResponse
   where
     parseKeysValues :: [(EntryId, RedisStreamValues)] -> BS.ByteString
     parseKeysValues keysValues =
@@ -220,27 +220,27 @@ xrangeHelper key rangef (RangeEntryId mili1 mili2) (RangeEntryId seq1 seq2) = do
         <> "\r\n"
         <> foldr (\(k, v) acc -> encodeBulkString k <> encodeBulkString v <> acc) BS.empty l
 
-xrangeCommand :: BS.ByteString -> RangeEntryId -> RangeEntryId -> ClientApp BS.ByteString
+xrangeCommand :: BS.ByteString -> RangeEntryId -> RangeEntryId -> ClientApp Response
 xrangeCommand key mili RangeMinusPlus = do
   res <- xrangeEndHelper key (\_ _ -> True)
   case res of
-    Nothing -> pure encodeNullArray
+    Nothing -> pure $ Response encodeNullArray emptyResponse
     Just seq -> xrangeCommand key mili seq
 xrangeCommand key RangeMinusPlus seq = do
   (filteredStream, Stream oldStream, streams) <- getStream key (M.lookupMin . M.filterWithKey (\_ _ -> True))
   case filteredStream of
-    Nothing -> pure encodeNullArray
+    Nothing -> pure $ Response encodeNullArray emptyResponse
     Just (EntryId m v, _) -> xrangeCommand key (RangeEntryId m v) seq
 xrangeCommand key (RangeMili mili) seq@(RangeEntryId seq1 seq2) = xrangeCommand key (RangeEntryId mili 0) seq
 xrangeCommand key mili@(RangeEntryId _ _) (RangeMili seq) = do
   res <- xrangeEndHelper key (\(EntryId m _) _ -> m == seq)
   case res of
-    Nothing -> pure $ encodeSimpleError "XRANGE: The end id does not exist"
+    Nothing -> pure $ Response (encodeSimpleError "XRANGE: The end id does not exist") emptyResponse
     Just (RangeEntryId _ newEnd) -> xrangeCommand key mili (RangeEntryId seq newEnd)
 xrangeCommand key (RangeMili mili) (RangeMili seq) = do
   res <- xrangeEndHelper key (\(EntryId m _) _ -> m == seq)
   case res of
-    Nothing -> pure $ encodeSimpleError "XRANGE: The end id does not exist"
+    Nothing -> pure $ Response (encodeSimpleError "XRANGE: The end id does not exist") emptyResponse
     Just (RangeEntryId _ newEnd) -> xrangeCommand key (RangeEntryId mili 0) (RangeEntryId seq newEnd)
 xrangeCommand key mili@(RangeEntryId _ _) seq@(RangeEntryId _ _) = xrangeHelper key (<) mili seq
 
@@ -268,7 +268,7 @@ xreadEntriesAvailable keyIds = do
               let updatedEntry = (key, RangeEntryId endMili endSeq)
               go xs (newIds ++ [updatedEntry])
 
-xreadCommand :: [(BS.ByteString, RangeEntryId)] -> Maybe Double -> ClientApp BS.ByteString
+xreadCommand :: [(BS.ByteString, RangeEntryId)] -> Maybe Double -> ClientApp Response
 xreadCommand keysIds (Just timeout) = go 0 keysIds
   where
     go elapsed ids = do
@@ -277,13 +277,13 @@ xreadCommand keysIds (Just timeout) = go 0 keysIds
         then xreadCommand newIds Nothing
         else
           if elapsed > (timeout / 1_000) && timeout > 0
-            then pure encodeNullArray
+            then pure $ Response encodeNullArray emptyResponse
             else do
               liftIO $ threadDelay 1_000
               go (elapsed + 0.001) newIds
 xreadCommand keysIds Nothing = do
   result <- go keysIds BS.empty 0
-  pure $ "*" <> (BS8.pack . show . length) keysIds <> "\r\n" <> result
+  pure $ Response ("*" <> (BS8.pack . show . length) keysIds <> "\r\n" <> result) emptyResponse
   where
     go :: [(BS.ByteString, RangeEntryId)] -> BS.ByteString -> Double -> ClientApp BS.ByteString
     go [] acc elapsed = pure acc
@@ -292,23 +292,23 @@ xreadCommand keysIds Nothing = do
       case res of
         Nothing -> pure encodeNullArray
         Just seq -> do
-          streamResp <- xrangeHelper stream_id (<=) entry_id seq
+          (Response streamResp _) <- xrangeHelper stream_id (<=) entry_id seq
           go xs (acc <> "*2\r\n" <> encodeBulkString stream_id <> streamResp) elapsed
 
-incrCommand :: BS.ByteString -> ClientApp BS.ByteString
+incrCommand :: BS.ByteString -> ClientApp Response
 incrCommand key = do
   val <- getDataEntry key
   case val of
     Nothing -> do
       setDataEntry key (MemoryStoreEntry (MSStringVal "1") Nothing)
-      pure $ encodeInteger 1
+      pure $ Response (encodeInteger 1) emptyResponse
     Just (MemoryStoreEntry (MSStringVal v) Nothing) -> case U.bsToInt v of
-      Nothing -> pure $ encodeSimpleError "value is not an integer or out of range"
+      Nothing -> pure $ Response (encodeSimpleError "value is not an integer or out of range") emptyResponse
       Just i -> do
         setDataEntry key (MemoryStoreEntry (MSStringVal $ (BS8.pack . show) (i + 1)) Nothing)
-        pure $ encodeInteger (i + 1)
+        pure $ Response (encodeInteger $ i + 1) emptyResponse
 
-execCommand :: ClientApp BS.ByteString
+execCommand :: ClientApp Response
 execCommand = do
   multi <- getMulti
   updateMulti False
@@ -316,56 +316,66 @@ execCommand = do
   then do
     ml <- getMultiList
     if null ml
-    then pure $ encodeArray True []
+    then pure $ Response (encodeArray True []) emptyResponse
     else do
       ml <- getMultiList
       res <- go ml []
-      pure $ encodeArray False res
-  else pure $ encodeSimpleError "EXEC without MULTI"
-  where go :: [ClientApp BS.ByteString] -> [BS.ByteString] -> ClientApp [BS.ByteString]
+      pure $ Response (encodeArray False res) emptyResponse
+  else pure $ Response (encodeSimpleError "EXEC without MULTI") emptyResponse
+  where go :: [ClientApp Response] -> [BS.ByteString] -> ClientApp [BS.ByteString]
         go [] acc = pure acc
         go (x:xs) acc = do
-           resp <- x
+           (Response resp _) <- x
            go xs (acc ++ [resp])
 
-discardCommand :: ClientApp BS.ByteString
+discardCommand :: ClientApp Response
 discardCommand = do
   multi <- getMulti
   if multi
   then do
     updateMulti False
     resetMultiCommands
-    pure $ encodeSimpleString "OK"
-  else pure $ encodeSimpleError "DISCARD without MULTI"
+    pure $ Response (encodeSimpleString "OK") emptyResponse
+  else pure $ Response (encodeSimpleError "DISCARD without MULTI") emptyResponse
 
-handleMultiCmd :: ClientApp BS.ByteString -> ClientApp BS.ByteString
+handleMultiCmd :: ClientApp Response -> ClientApp Response
 handleMultiCmd op = do
   multi <- getMulti
   if multi
   then do
     addMultiCommand op
-    pure $ encodeSimpleString "QUEUED"
+    pure $ Response (encodeSimpleString "QUEUED") emptyResponse
   else op
 
-infoCommand :: InfoRequest -> ClientApp BS.ByteString
+infoCommand :: InfoRequest -> ClientApp Response
 infoCommand Replication = do
   role <- getRole
   case role of
-    Master repID repOffset -> pure $ encodeBulkString $ "# Replication\nrole:master\nmaster_replid:" <> BS8.pack repID <> "\nmaster_repl_offset:" <> (BS8.pack . show) repOffset
-    Slave roHost roPort -> pure $ encodeBulkString "# Replication\nrole:slave"
+    Master repID repOffset -> pure $ Response (masterResponse repID repOffset) emptyResponse
+    Slave roHost roPort -> pure $ Response (encodeBulkString "# Replication\nrole:slave") emptyResponse
+  where masterResponse rID repOS = encodeBulkString $ "# Replication\nrole:master\nmaster_replid:" <> BS8.pack rID <> "\nmaster_repl_offset:" <> (BS8.pack . show) repOS
 
-replConfCommand :: ReplConfOptions -> ClientApp BS.ByteString
+replConfCommand :: ReplConfOptions -> ClientApp Response
 replConfCommand (ListeningPort port) = do
-  pure $ encodeSimpleString "OK"
+  pure $ Response (encodeSimpleString "OK") emptyResponse
 replConfCommand (Capa capa) = do
-  pure $ encodeSimpleString "OK"
+  pure $ Response (encodeSimpleString "OK") emptyResponse
 
-psyncCommand :: PSyncRequest -> ClientApp BS.ByteString
+emptyRdbFile :: BS.ByteString
+emptyRdbFile = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog=="
+
+sendSnapshot :: ClientApp ()
+sendSnapshot = do
+  socket <- getSocket
+  case U.decodeRdbBase64 emptyRdbFile of
+    Right x -> liftIO $ send socket $ encodeRdbFile x
+
+psyncCommand :: PSyncRequest -> ClientApp Response
 psyncCommand PSyncUnknown = do
   repl <- getClientReplication
   case repl of
-    Master repID _ -> pure $ encodeSimpleString $ "FULLRESYNC " <> BS8.pack repID <> " 0"
-    _ -> pure mempty
+    Master repID _ -> pure $ Response (encodeSimpleString $ "FULLRESYNC " <> BS8.pack repID <> " 0") sendSnapshot
+    _ -> pure $ Response mempty emptyResponse
 
 handleConnection :: ClientApp ()
 handleConnection = go
@@ -378,9 +388,9 @@ handleConnection = go
       case mb of
         Nothing -> pure ()
         Just buf -> do
-          resp <- case runParse buf of
-            Right Ping -> handleMultiCmd $ pure (encodeSimpleString "PONG")
-            Right (Echo str) -> handleMultiCmd $ pure $ encodeBulkString str
+          (Response resp nextAction) <- case runParse buf of
+            Right Ping -> handleMultiCmd $ pure $ Response (encodeSimpleString "PONG") emptyResponse
+            Right (Echo str) -> handleMultiCmd $ pure $ Response (encodeBulkString str) emptyResponse
             Right (Set key val args) -> handleMultiCmd $ setCommand key val args
             Right (Get key) -> handleMultiCmd $ getCommand key
             Right (RPush key values) -> handleMultiCmd $ pushCommand key values RightPushCmd
@@ -394,14 +404,17 @@ handleConnection = go
             Right (XRange key start end) -> handleMultiCmd $ xrangeCommand key start end
             Right (XRead keysIds timeout) -> handleMultiCmd $ xreadCommand keysIds timeout
             Right (Incr key) -> handleMultiCmd $ incrCommand key
-            Right Multi -> updateMulti True >> pure (encodeSimpleString "OK")
+            Right Multi -> do
+              updateMulti True
+              pure $ Response (encodeSimpleString "OK") emptyResponse
             Right Exec -> execCommand
             Right Discard -> discardCommand
             Right (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
             Right (ReplConf replOptions) -> replConfCommand replOptions
             Right (Psync req) -> psyncCommand req
-            Left e -> pure $ U.renderParseError e
+            Left e -> pure $ Response (U.renderParseError e) emptyResponse
           liftIO $ send sock resp
+          nextAction
           go
 
 recvExactOneReply :: Network.Simple.TCP.Socket -> IO BS.ByteString
@@ -426,18 +439,23 @@ runReplica = do
         pongResp <- liftIO $ recvExactOneReply _sock
         case runSimpleStringParse pongResp of
           Right "PONG" -> do
-            liftIO $ putStrLn "successfully received an OK!"
+            -- liftIO $ putStrLn "successfully received an OK!"
             liftIO $ send _sock $ encodeArray True ["REPLCONF", "listening-port", BS8.pack clientPort]
             replResp1 <- liftIO $ recvExactOneReply _sock
             case runSimpleStringParse replResp1 of
               Right "OK" -> do
-                liftIO $ putStrLn "Got confirmation form REPLCONF listening port"
+                -- liftIO $ putStrLn "Got confirmation form REPLCONF listening port"
                 liftIO $ send _sock $ encodeArray True ["REPLCONF", "capa", "psync2"]
                 replResp2 <- liftIO $ recvExactOneReply _sock
                 case runSimpleStringParse replResp1 of
                   Right "OK" -> do
-                   liftIO $ putStrLn "Got confirmation form REPLCONF capability"
+                   -- liftIO $ putStrLn "Got confirmation form REPLCONF capability"
                    liftIO $ send _sock $ encodeArray True ["PSYNC", "?", "-1"]
+                   -- TODO: parse replPsync to get the replica ID and the offset
+                   replPsync <- liftIO $ recvExactOneReply _sock
+                   -- TODO: parse Rdb file response and update the DB accordingly
+                   pure $ recvExactOneReply _sock
+                   
       pure mempty
     Master _ _ -> pure mempty
 

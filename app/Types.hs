@@ -19,6 +19,8 @@ module Types
   , MemoryStoreEntry (..)
   , MemoryStore (..)
   , ClientState (..)
+  , Response (..)
+  , emptyResponse
   , RedisStreamValues
   , RedisStream
   , RedisStreams
@@ -174,8 +176,16 @@ data ClientEnv = ClientEnv
 
 data ClientState = ClientState
   { multi :: !Bool
-  , multiList :: [ClientApp BS.ByteString]
+  , multiList :: [ClientApp Response]
   }
+
+data Response = Response
+  { rspBytes :: BS.ByteString
+  , rspAfter :: ClientApp ()
+  }
+
+emptyResponse :: ClientApp ()
+emptyResponse = pure ()
 
 newtype App a = App { unApp :: ReaderT SharedEnv IO a }
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader SharedEnv)

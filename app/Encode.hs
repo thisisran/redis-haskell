@@ -2,6 +2,7 @@
 
 module Encode
   ( encodeBulkString
+  , encodeRdbFile
   , encodeNullBulkString
   , encodeSimpleString
   , encodeInteger
@@ -14,7 +15,10 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 
 encodeBulkString :: BS.ByteString -> BS.ByteString
-encodeBulkString x = "$" <> BS8.pack (show (BS.length x)) <> "\r\n" <> x <> "\r\n"
+encodeBulkString x = "$" <> (BS8.pack . show . BS.length) x <> "\r\n" <> x <> "\r\n"
+
+encodeRdbFile :: BS.ByteString -> BS.ByteString
+encodeRdbFile x = "$" <> (BS8.pack . show . BS.length) x <> "\r\n" <> x
 
 encodeNullBulkString :: BS.ByteString
 encodeNullBulkString = "$-1\r\n"

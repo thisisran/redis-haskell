@@ -132,7 +132,7 @@ setStreams = setDataEntry "streams"
 updateMulti :: Bool -> ClientApp ()
 updateMulti state = modify' (\cs -> cs { multi = state })
 
-addMultiCommand :: ClientApp BS.ByteString -> ClientApp ()
+addMultiCommand :: ClientApp Response -> ClientApp ()
 addMultiCommand cmd = do
   ml <- gets (.multiList)
   modify' (\cs -> cs { multiList = ml ++ [cmd] })
@@ -143,5 +143,5 @@ resetMultiCommands = modify' (\cs -> cs { multiList = [] })
 getMulti :: ClientApp Bool
 getMulti = gets (.multi)
 
-getMultiList :: ClientApp [ClientApp BS.ByteString]
+getMultiList :: ClientApp [ClientApp Response]
 getMultiList = gets (.multiList)
