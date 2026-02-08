@@ -360,6 +360,13 @@ replConfCommand (ListeningPort port) = do
 replConfCommand (Capa capa) = do
   pure $ encodeSimpleString "OK"
 
+psyncCommand :: PSyncRequest -> ClientApp BS.ByteString
+psyncCommand PSyncUnknown = do
+  repl <- getClientReplication
+  case repl of
+    Master repID _ -> pure $ encodeSimpleString $ "FULLRESYNC " <> BS8.pack repID <> " 0"
+    _ -> pure mempty
+
 handleConnection :: ClientApp ()
 handleConnection = go
   where
@@ -392,6 +399,7 @@ handleConnection = go
             Right Discard -> discardCommand
             Right (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
             Right (ReplConf replOptions) -> replConfCommand replOptions
+            Right (Psync req) -> psyncCommand req
             Left e -> pure $ U.renderParseError e
           liftIO $ send sock resp
           go

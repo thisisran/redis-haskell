@@ -10,6 +10,7 @@ module Types
   , RangeEntryId (..)
   , InfoRequest (..)
   , ReplConfOptions (..)
+  , PSyncRequest (..)
   , App
   , ClientApp
   , ExpireDuration (..)
@@ -68,6 +69,11 @@ data ReplConfOptions = ListeningPort BS.ByteString
                      | Capa BS.ByteString
                      deriving (Eq, Show)
 
+data PSyncRequest = PSyncUnknown
+                  | PSyncFull BS.ByteString Word64
+                  deriving (Eq, Show)
+                  
+
 data Command
   = Ping
   | Echo BS.ByteString
@@ -89,6 +95,7 @@ data Command
   | Discard
   | Info InfoRequest
   | ReplConf ReplConfOptions
+  | Psync PSyncRequest
   deriving (Show, Eq)
 
 data EntryId = EntryId !Word64 !Word64

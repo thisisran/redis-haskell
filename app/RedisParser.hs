@@ -79,6 +79,7 @@ specs =
   , CommandSpec ["DISCARD"] parseDISCARD
   , CommandSpec ["INFO"] parseINFO
   , CommandSpec ["REPLCONF"] parseREPLCONF
+  , CommandSpec ["PSYNC"] parsePSYNC
   ]
 
 lookupSpec :: BS.ByteString -> [CommandSpec] -> Maybe CommandSpec
@@ -363,3 +364,20 @@ parseREPLCONF n = do
           B.string' "capa"
           B.crlf
           ReplConf . Capa <$> parseBulkString
+
+parsePSYNC :: Int -> RedisParser Command
+parsePSYNC n = do
+  expectArity [3] n
+  try parseUnknown <|> parseFull
+      where parseUnknown = do
+              parseBulkStringStart
+              void $ B.char 63
+              void B.crlf
+              pure $ Psync PSyncUnknown
+            parseFull = do
+              replID <- parseBulkString
+              parseBulkStringStart
+              replOffset <- L.decimal <* B.crlf
+              pure $ Psync (PSyncFull replID replOffset)
+              
+              

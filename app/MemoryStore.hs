@@ -4,6 +4,7 @@
 module MemoryStore
   ( getSocket
   , getReplication
+  , getClientReplication
   , getPort
   , getClientID
   , getMulti
@@ -96,6 +97,9 @@ getSocket = asks $ (.ccfgSocket) . cenvConfig
 
 getReplication :: App ReplicationInfo
 getReplication = asks $ (.cfgReplication) . senvConfig
+
+getClientReplication :: ClientApp ReplicationInfo
+getClientReplication = asks $ (.cfgReplication) . ccfgShared . cenvConfig
 
 getPort :: App String
 getPort = asks $ (.cfgPort) . senvConfig
