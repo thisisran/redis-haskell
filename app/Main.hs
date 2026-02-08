@@ -354,6 +354,12 @@ infoCommand Replication = do
     Master repID repOffset -> pure $ encodeBulkString $ "# Replication\nrole:master\nmaster_replid:" <> BS8.pack repID <> "\nmaster_repl_offset:" <> (BS8.pack . show) repOffset
     Slave roHost roPort -> pure $ encodeBulkString "# Replication\nrole:slave"
 
+replConfCommand :: ReplConfOptions -> ClientApp BS.ByteString
+replConfCommand (ListeningPort port) = do
+  pure $ encodeSimpleString "OK"
+replConfCommand (Capa capa) = do
+  pure $ encodeSimpleString "OK"
+
 handleConnection :: ClientApp ()
 handleConnection = go
   where
@@ -385,20 +391,47 @@ handleConnection = go
             Right Exec -> execCommand
             Right Discard -> discardCommand
             Right (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
+            Right (ReplConf replOptions) -> replConfCommand replOptions
             Left e -> pure $ U.renderParseError e
           liftIO $ send sock resp
           go
 
+recvExactOneReply :: Network.Simple.TCP.Socket -> IO BS.ByteString
+recvExactOneReply sock = go mempty
+  where
+    go acc =
+      recv sock 4096 >>= \case
+        Nothing -> pure acc
+        Just chunk
+          | BS.null chunk -> go acc
+          | otherwise     -> pure (acc <> chunk)
+
 runReplica :: App ()
 runReplica = do
+  clientPort <- getPort
   repl <- getReplication
   case repl of
     Slave host port -> do
+      liftIO $ putStrLn ("Trying to connect to " <> host <> " " <> port)
       _ <- liftIO $ async $ connect host port $ \(_sock, _addr) -> do
         send _sock $ encodeArray True ["PING"]
-        -- threadDelay maxBound
-      pure ()
-    Master _ _ -> pure ()
+        pongResp <- liftIO $ recvExactOneReply _sock
+        case runSimpleStringParse pongResp of
+          Right "PONG" -> do
+            liftIO $ putStrLn "successfully received an OK!"
+            liftIO $ send _sock $ encodeArray True ["REPLCONF", "listening-port", BS8.pack clientPort]
+            replResp1 <- liftIO $ recvExactOneReply _sock
+            case runSimpleStringParse replResp1 of
+              Right "OK" -> do
+                liftIO $ putStrLn "Got confirmation form REPLCONF listening port"
+                liftIO $ send _sock $ encodeArray True ["REPLCONF", "capa", "psync2"]
+                replResp2 <- liftIO $ recvExactOneReply _sock
+                case runSimpleStringParse replResp1 of
+                  Right "OK" -> do
+                   liftIO $ putStrLn "Got confirmation form REPLCONF capability"
+
+      pure mempty
+    Master _ _ -> pure mempty
 
 main :: IO ()
 main = do
@@ -424,7 +457,7 @@ main = do
   case sharedCfg of
     SharedConfig _ (Master _ _) -> pure ()
     SharedConfig _ (Slave _ _) -> runApp sharedEnv runReplica
-    
+
   putStrLn $ "Redis server listening on port " ++ port
   serve HostAny port $ \(socket, address) -> do
     putStrLn $ "successfully connected client: " ++ show address

@@ -5,6 +5,7 @@ license: BSD3
 default-extensions:
   - OverloadedStrings
   - NumericUnderscores
+  - LambdaCase
 
 dependencies:
   - base >= 4.19 && < 5

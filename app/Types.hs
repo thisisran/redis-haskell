@@ -9,6 +9,7 @@ module Types
   , EntryId (..)
   , RangeEntryId (..)
   , InfoRequest (..)
+  , ReplConfOptions (..)
   , App
   , ClientApp
   , ExpireDuration (..)
@@ -63,6 +64,10 @@ data InfoRequest = FullInfo
                  | Memory
                  deriving (Eq, Show)
 
+data ReplConfOptions = ListeningPort BS.ByteString
+                     | Capa BS.ByteString
+                     deriving (Eq, Show)
+
 data Command
   = Ping
   | Echo BS.ByteString
@@ -83,6 +88,7 @@ data Command
   | Exec
   | Discard
   | Info InfoRequest
+  | ReplConf ReplConfOptions
   deriving (Show, Eq)
 
 data EntryId = EntryId !Word64 !Word64

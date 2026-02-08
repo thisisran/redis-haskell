@@ -4,6 +4,7 @@
 module MemoryStore
   ( getSocket
   , getReplication
+  , getPort
   , getClientID
   , getMulti
   , getMultiList
@@ -95,6 +96,9 @@ getSocket = asks $ (.ccfgSocket) . cenvConfig
 
 getReplication :: App ReplicationInfo
 getReplication = asks $ (.cfgReplication) . senvConfig
+
+getPort :: App String
+getPort = asks $ (.cfgPort) . senvConfig
 
 newMemoryStore :: IO MemoryStore
 newMemoryStore = MemoryStore <$> newTVarIO M.empty <*> newTVarIO M.empty

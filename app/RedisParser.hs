@@ -1,8 +1,7 @@
-{-# LANGUAGE OverloadedStrings #-}
-
 module RedisParser
   ( parseCommand
   , runParse
+  , runSimpleStringParse
   , prettifyErrors
   ) where
 
@@ -13,7 +12,7 @@ import Data.Char (toUpper)
 import Data.Function (on)
 import Data.List (find)
 import Data.Maybe (isNothing)
-import Text.Megaparsec (takeP, (<?>), parse, errorBundlePretty, (<|>), try)
+import Text.Megaparsec (takeP, (<?>), parse, errorBundlePretty, (<|>), try, takeWhileP, takeWhile1P)
 import Text.Megaparsec.Stream (VisualStream, TraversableStream)
 import Text.Megaparsec.Error (ShowErrorComponent, ParseErrorBundle)
 import Text.Megaparsec.Char (string)
@@ -32,6 +31,11 @@ parseBulkString = do
   n <- L.decimal
   B.crlf
   takeP (Just "bulk string") n <* B.crlf
+
+parseSimpleString :: RedisParser BS.ByteString
+parseSimpleString = do
+  void (B.char 43) -- '+'
+  takeWhileP (Just "parsing a simple string") (/= 13) <* B.crlf
 
 parseArrayLen :: RedisParser Int
 parseArrayLen = do
@@ -74,6 +78,7 @@ specs =
   , CommandSpec ["EXEC"] parseEXEC
   , CommandSpec ["DISCARD"] parseDISCARD
   , CommandSpec ["INFO"] parseINFO
+  , CommandSpec ["REPLCONF"] parseREPLCONF
   ]
 
 lookupSpec :: BS.ByteString -> [CommandSpec] -> Maybe CommandSpec
@@ -204,6 +209,7 @@ countKeyValue k
     pure (key, value)))
 
 runParse = parse parseCommand "<input>"
+runSimpleStringParse = parse parseSimpleString "<server_response>"
 
 prettifyErrors :: (Text.Megaparsec.Stream.VisualStream s,
       Text.Megaparsec.Stream.TraversableStream s,
@@ -339,3 +345,21 @@ parseINFO n = do
         parseServer = void parseBulkStringStart >> B.string' "server" >> B.crlf >> pure (Info Server)
         parseClients = void parseBulkStringStart >> B.string' "clients" >> B.crlf >> pure (Info Clients)
         parseMemory = void parseBulkStringStart >> B.string' "memory" >> B.crlf >> pure (Info Memory)
+
+parseREPLCONF :: Int  -> RedisParser Command
+parseREPLCONF n = do
+  expectArity [3] n
+  try parseListeningPort <|> parseCapability
+  where parseListeningPort = do
+          void parseBulkStringStart
+          B.string' "listening-port"
+          B.crlf
+          void parseBulkStringStart
+          port <- takeWhile1P (Just "parsing listening port") isDigitW8
+          pure $ ReplConf (ListeningPort port)
+        isDigitW8 w = w >= 48 && w <= 57
+        parseCapability = do
+          void parseBulkStringStart
+          B.string' "capa"
+          B.crlf
+          ReplConf . Capa <$> parseBulkString
