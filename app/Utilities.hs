@@ -10,6 +10,7 @@ module Utilities
   , renderParseError
   , randomAlphaNum40BS
   , decodeRdbBase64
+  , emptyRdbFile
   ) where
 
 import System.Random.Stateful (uniformRM, globalStdGen)
@@ -67,6 +68,14 @@ range f lo hi m
   | otherwise = M.takeWhileAntitone (<= hi) $ M.dropWhileAntitone (`f` lo) m
 
 entryIdToBS :: EntryId -> BS.ByteString
+entryIdToBS EntryGenNew =
+  BSL.toStrict $
+    BB.toLazyByteString $
+      BB.char7 '*' <> BB.char7 '-' <> BB.char7 '*'
+entryIdToBS (EntryGenSeq p) =
+  BSL.toStrict $
+    BB.toLazyByteString $
+      BB.word64Dec p <> BB.char7 '-' <> BB.char7 '*'
 entryIdToBS (EntryId ms seq) =
   BSL.toStrict $
     BB.toLazyByteString $
@@ -99,3 +108,6 @@ decodeRdbBase64 input =
            2 -> "=="
            3 -> "="
            _ -> bs
+
+emptyRdbFile :: BS.ByteString
+emptyRdbFile = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog=="

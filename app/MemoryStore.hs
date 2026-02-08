@@ -24,6 +24,9 @@ module MemoryStore
   , getStream
   , setStreams
   , getRole
+  , MonadStore
+  , getReplicas
+  , addReplica
   ) where
 
 import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar')
@@ -43,21 +46,55 @@ import Network.Simple.TCP (Socket)
 
 import qualified Data.ByteString as BS
 
-getData :: ClientApp (TVar (M.Map BS.ByteString MemoryStoreEntry))
-getData = asks $ (.msData) . senvStore . cenvShared
+class (Monad m, MonadIO m) => MonadStore m where
+  getData :: m (TVar (M.Map BS.ByteString MemoryStoreEntry))
+  setDataEntry :: BS.ByteString -> MemoryStoreEntry -> m ()
+  setDataEntry key value = do
+    tv <- getData
+    liftIO . atomically $ modifyTVar' tv (M.insert key value)
+  getDataEntry :: BS.ByteString -> m (Maybe MemoryStoreEntry)
+  getDataEntry key = do
+    tv <- getData
+    liftIO $ M.lookup key <$> readTVarIO tv
+  getStream :: BS.ByteString -> (M.Map EntryId RedisStreamValues -> Maybe (EntryId, RedisStreamValues)) -> m (Maybe (EntryId, RedisStreamValues), RedisStream, RedisStreams)
+  getStream streamID filter = do
+    s@(Streams streams) <- getStreams
+    let os@(Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
+    pure (filter oldStream, os, s)
+  getStreams :: m RedisStreams
+  getStreams = do
+    streams <- getDataEntry "streams"
+    pure $ case streams of
+      Just (MemoryStoreEntry (MSStreams s) Nothing) -> s
+      _ -> Streams HM.empty
+  setStreams :: MemoryStoreEntry -> m ()
+  setStreams = setDataEntry "streams"
+  getPort :: m String
+  getReplication :: m ReplicationInfo
+  getReplicas :: m (TVar [Socket])
+  addReplica :: Socket -> m ()
+  addReplica sock = do
+    tv <- getReplicas
+    liftIO . atomically $ modifyTVar' tv (\l -> l ++ [sock])
+
+-------------------------------------------------------------------------------------
+
 
 getWaiters :: ClientApp (TVar (M.Map BS.ByteString IS.IntSet))
 getWaiters = asks $ (.msBLPopWaiters) . senvStore . cenvShared
 
-setDataEntry :: BS.ByteString -> MemoryStoreEntry -> ClientApp ()
-setDataEntry key value = do
-  tv <- getData
-  liftIO . atomically $ modifyTVar' tv (M.insert key value)
+instance MonadStore App where
+  getData = asks $ (.msData) . senvStore
+  getPort = asks $ (.cfgPort) . senvConfig
+  getReplication = asks $ (.cfgReplication) . senvConfig
+  getReplicas = asks cenvReplicas
 
-getDataEntry :: BS.ByteString -> ClientApp (Maybe MemoryStoreEntry)
-getDataEntry key = do
-  tv <- getData
-  liftIO $ M.lookup key <$> readTVarIO tv
+instance MonadStore ClientApp where
+  getData = asks $ (.msData) . senvStore . cenvShared
+  getPort = asks $ (.cfgPort) . senvConfig . cenvShared
+  getReplication = asks $ (.cfgReplication) . senvConfig . cenvShared
+  getReplicas = asks (cenvReplicas . cenvShared)
+    
 
 delDataEntry :: BS.ByteString -> ClientApp ()
 delDataEntry key = do
@@ -95,36 +132,13 @@ getClientID = asks $ (.ccfgID) . cenvConfig
 getSocket :: ClientApp Socket
 getSocket = asks $ (.ccfgSocket) . cenvConfig
 
-getReplication :: App ReplicationInfo
-getReplication = asks $ (.cfgReplication) . senvConfig
-
 getClientReplication :: ClientApp ReplicationInfo
 getClientReplication = asks $ (.cfgReplication) . ccfgShared . cenvConfig
 
-getPort :: App String
-getPort = asks $ (.cfgPort) . senvConfig
+---------
 
 newMemoryStore :: IO MemoryStore
 newMemoryStore = MemoryStore <$> newTVarIO M.empty <*> newTVarIO M.empty
-
-getStreams :: ClientApp RedisStreams
-getStreams = do
-  streams <- getDataEntry "streams"
-  pure $ case streams of
-    Just (MemoryStoreEntry (MSStreams s) Nothing) -> s
-    _ -> Streams HM.empty
-
-getStream ::
-  BS.ByteString ->
-  (M.Map EntryId RedisStreamValues -> Maybe (EntryId, RedisStreamValues)) ->
-  ClientApp (Maybe (EntryId, RedisStreamValues), RedisStream, RedisStreams)
-getStream streamID filter = do
-  s@(Streams streams) <- getStreams
-  let os@(Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
-  pure (filter oldStream, os, s)
-
-setStreams :: MemoryStoreEntry -> ClientApp ()
-setStreams = setDataEntry "streams"
 
 ----------------------------------------------------------------------------------
 -- ClientState

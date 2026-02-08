@@ -5,11 +5,13 @@ module Main (main) where
 import System.Environment (getArgs)
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 
-import Control.Concurrent.Async (async)
+-- import Control.Concurrent.Async (async)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
-import Control.Monad.IO.Class (liftIO)
-import Control.Monad (unless, void)
+import Control.Monad.IO.Class (liftIO, MonadIO)
+import Control.Monad (when, unless, void)
+
+import UnliftIO (MonadUnliftIO, withRunInIO, async)
 
 import Data.Word (Word64)
 import Data.Maybe (fromMaybe, isNothing, isJust)
@@ -29,12 +31,35 @@ import Types
 import RedisParser
 import CliParser
 
--- TODO: Eventually will need to turn it into a recursive function that will process all the arguments provided, not just 1 additional one
-setCommand :: BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> ClientApp Response
+isMaster :: MonadStore m => m Bool
+isMaster = do
+  getReplication >>= \case
+    (Master _ _) -> pure True
+    _            -> pure False
+
+updateReplicas :: MonadStore m => [BS.ByteString] -> m ()
+updateReplicas command = do
+  update <- isMaster
+  when update $ do
+    replSockets <- getReplicas
+    socketList <- liftIO $ readTVarIO replSockets
+    go socketList
+    where go [] = pure ()
+          go (x:xs) = do
+            send x $ encodeArray True command
+            go xs
+
+-- TODO: Eventually will need to turn it into a recursive function that will process all the arguments provided, not just 1 key/value pair
+setCommand :: MonadStore m => BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> m Response
 setCommand key val ex = do
   now <- liftIO U.nowNs
   setDataEntry key $ handleExpiry ex now
-  pure $ Response (encodeSimpleString "OK") emptyResponse
+  
+  let exCommand = case ex of
+                   Nothing -> []
+                   Just (EX n) -> ["ex", (BS8.pack . show) n]
+                   Just (PX n) -> ["px", (BS8.pack . show) n]
+  pure $ Response (encodeSimpleString "OK") (updateReplicas $ ["SET", key, val] ++ exCommand)
   where
     handleExpiry Nothing timeRef = MemoryStoreEntry (MSStringVal val) Nothing
     handleExpiry (Just (EX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral $ ex * 1_000_000), ExpireReference timeRef)
@@ -54,17 +79,20 @@ getCommand key = do
           pure $ Response encodeNullBulkString emptyResponse
         else pure $ Response (encodeBulkString v) emptyResponse
 
-pushCommand :: BS.ByteString -> [BS.ByteString] -> PushCommand -> ClientApp Response
+pushCommand :: MonadStore m => BS.ByteString -> [BS.ByteString] -> PushCommand -> m Response
 pushCommand key values pushType = do
   val <- getDataEntry key
   let valuesCount = length values
+  let pushArgs = case pushType of
+                   RightPushCmd -> "RPUSH"
+                   LeftPushCmd  -> "LPUSH"
   case val of
     Nothing -> do
       setDataEntry key (MemoryStoreEntry (MSListVal $ newItems pushType) Nothing)
-      pure $ Response (encodeInteger valuesCount) emptyResponse
+      pure $ Response (encodeInteger valuesCount) (updateReplicas $ [pushArgs, key] ++ values)
     Just (MemoryStoreEntry (MSListVal vs) Nothing) -> do
       setDataEntry key (MemoryStoreEntry (MSListVal $ newList pushType vs) Nothing)
-      pure $ Response (encodeInteger (length vs + valuesCount)) emptyResponse
+      pure $ Response (encodeInteger (length vs + valuesCount)) (updateReplicas $ [pushArgs, key] ++ values)
   where
     newItems RightPushCmd = values
     newItems LeftPushCmd = reverse values
@@ -100,26 +128,25 @@ llenCommand key = do
     Nothing -> pure $ Response (encodeInteger 0) emptyResponse
     Just (MemoryStoreEntry (MSListVal v) Nothing) -> pure $ Response (encodeInteger $ length v) emptyResponse
 
-lpopHelper :: BS.ByteString -> Int -> ClientApp Response
-lpopHelper key count = do
+applyLPopHelper :: MonadStore m => BS.ByteString -> Int -> m Response
+applyLPopHelper key count = do
   val <- getDataEntry key
-  socket <- getSocket
   case val of
-    Nothing -> pure $ Response encodeNullBulkString emptyResponse
+    Nothing -> pure $ Response encodeNullBulkString (updateReplicas ["LPOP", key, (BS8.pack . show) count])
     Just (MemoryStoreEntry (MSListVal v) Nothing) ->
       let normCount = min count $ length v
-      in go v socket normCount
-      where
-        go [] socket _ = pure $ Response encodeNullBulkString emptyResponse
-        go xs socket c = do
-          setDataEntry key (MemoryStoreEntry (MSListVal (drop c xs)) Nothing)
-          pure $ Response (getPopped c v) emptyResponse
-          where
-            getPopped 1 (x : _) = encodeBulkString x
-            getPopped popCount xs = encodeArray True (take popCount xs)
+      in go v normCount
+         where
+           go [] _ = pure $ Response encodeNullBulkString (updateReplicas ["LPOP", key, (BS8.pack . show) count])
+           go xs c = do
+             setDataEntry key (MemoryStoreEntry (MSListVal (drop c xs)) Nothing)
+             pure $ Response (getPopped c v) (updateReplicas ["LPOP", key, (BS8.pack . show) count])
+             where
+               getPopped 1 (x : _) = encodeBulkString x
+               getPopped popCount xs = encodeArray True (take popCount xs)
 
 lpopCommand :: BS.ByteString -> Int -> ClientApp Response
-lpopCommand = lpopHelper
+lpopCommand = applyLPopHelper
 
 blpopCommand :: BS.ByteString -> Double -> Int -> ClientApp Response
 blpopCommand key timeout clientID = go 0
@@ -140,12 +167,12 @@ blpopCommand key timeout clientID = go 0
               waiters <- getWaiterEntry key
               case waiters of
                 Nothing -> do
-                  (Response resp _) <- lpopHelper key 1
+                  (Response resp _) <- applyLPopHelper key 1
                   pure $ Response (encodeArray False [encodeBulkString key, resp]) emptyResponse
                 Just waitersList -> do
                   if IS.member clientID waitersList
                     then do
-                      (Response resp _) <- lpopHelper key 1
+                      (Response resp _) <- applyLPopHelper key 1
                       delWaiterEntry key
                       pure $ Response (encodeArray False [encodeBulkString key, resp]) emptyResponse
                     else do
@@ -167,7 +194,7 @@ typeCommand key = do
     Just (MemoryStoreEntry (MSStringVal _) _) -> pure $ Response (encodeSimpleString "string") emptyResponse
     Just (MemoryStoreEntry (MSListVal _) _) -> pure $ Response (encodeSimpleString "list") emptyResponse
 
-xaddCommand :: BS.ByteString -> EntryId -> RedisStreamValues -> ClientApp Response
+xaddCommand :: MonadStore m => BS.ByteString -> EntryId -> RedisStreamValues -> m Response
 xaddCommand streamID (EntryId 0 0) values = pure $ Response (encodeSimpleError "The ID specified in XADD must be greater than 0-0") emptyResponse
 xaddCommand streamID EntryGenNew values = liftIO U.nowNs >>= \now -> xaddCommand streamID (EntryGenSeq (fromIntegral now)) values
 xaddCommand streamID (EntryGenSeq mili) values = do
@@ -177,20 +204,23 @@ xaddCommand streamID (EntryGenSeq mili) values = do
     Just (EntryId m v, _) -> xaddCommand streamID (EntryId mili (v + 1)) values
 xaddCommand streamID entryID@(EntryId mili seq) values = do
   (filteredStream, Stream oldStream, streams) <- getStream streamID (M.lookupMax . M.filterWithKey (\_ _ -> True))
+  let replicaRep = ["XADD", streamID, U.entryIdToBS entryID] ++ valuesToArray values []
   case filteredStream of
     Nothing -> addNewEntry M.empty streams
     Just (x, _) ->
       if x >= entryID
-        then pure $ Response (encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item") emptyResponse
+        then pure $ Response (encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item") (updateReplicas replicaRep)
         else addNewEntry oldStream streams
   where
-    addNewEntry :: M.Map EntryId RedisStreamValues -> RedisStreams -> ClientApp Response
+    addNewEntry :: MonadStore m => M.Map EntryId RedisStreamValues -> RedisStreams -> m Response
     addNewEntry oldStream (Streams streams) = do
       let newEntry = values
       let newStream = Stream (M.insert entryID newEntry oldStream)
       let newStreams = HM.insert streamID newStream streams
       setStreams (MemoryStoreEntry (MSStreams (Streams newStreams)) Nothing)
       pure $ Response (encodeBulkString (U.entryIdToBS entryID)) emptyResponse
+    valuesToArray [] acc = acc
+    valuesToArray ((key,value):xs) acc = valuesToArray xs (acc ++ [key, value])
 
 xrangeEndHelper :: BS.ByteString -> (EntryId -> RedisStreamValues -> Bool) -> ClientApp (Maybe RangeEntryId)
 xrangeEndHelper key f = do
@@ -295,18 +325,18 @@ xreadCommand keysIds Nothing = do
           (Response streamResp _) <- xrangeHelper stream_id (<=) entry_id seq
           go xs (acc <> "*2\r\n" <> encodeBulkString stream_id <> streamResp) elapsed
 
-incrCommand :: BS.ByteString -> ClientApp Response
+incrCommand :: MonadStore m => BS.ByteString -> m Response
 incrCommand key = do
   val <- getDataEntry key
   case val of
     Nothing -> do
       setDataEntry key (MemoryStoreEntry (MSStringVal "1") Nothing)
-      pure $ Response (encodeInteger 1) emptyResponse
+      pure $ Response (encodeInteger 1) (updateReplicas ["INCR", key])
     Just (MemoryStoreEntry (MSStringVal v) Nothing) -> case U.bsToInt v of
       Nothing -> pure $ Response (encodeSimpleError "value is not an integer or out of range") emptyResponse
       Just i -> do
         setDataEntry key (MemoryStoreEntry (MSStringVal $ (BS8.pack . show) (i + 1)) Nothing)
-        pure $ Response (encodeInteger $ i + 1) emptyResponse
+        pure $ Response (encodeInteger $ i + 1) (updateReplicas ["INCR", key])
 
 execCommand :: ClientApp Response
 execCommand = do
@@ -361,26 +391,25 @@ replConfCommand (ListeningPort port) = do
 replConfCommand (Capa capa) = do
   pure $ Response (encodeSimpleString "OK") emptyResponse
 
-emptyRdbFile :: BS.ByteString
-emptyRdbFile = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog=="
-
 sendSnapshot :: ClientApp ()
 sendSnapshot = do
   socket <- getSocket
-  case U.decodeRdbBase64 emptyRdbFile of
+  case U.decodeRdbBase64 U.emptyRdbFile of
     Right x -> liftIO $ send socket $ encodeRdbFile x
 
 psyncCommand :: PSyncRequest -> ClientApp Response
 psyncCommand PSyncUnknown = do
   repl <- getClientReplication
   case repl of
-    Master repID _ -> pure $ Response (encodeSimpleString $ "FULLRESYNC " <> BS8.pack repID <> " 0") sendSnapshot
-    _ -> pure $ Response mempty emptyResponse
+    Master repID _ -> do
+      socket <- getSocket
+      addReplica socket
+      pure $ Response (encodeSimpleString $ "FULLRESYNC " <> BS8.pack repID <> " 0") sendSnapshot
+    _ -> pure $ Response mempty emptyResponse -- A slave will never get a PSync command from a client
 
 handleConnection :: ClientApp ()
 handleConnection = go
   where
-    go :: ClientApp ()
     go = do
       sock <- getSocket
       clientID <- getClientID
@@ -417,7 +446,10 @@ handleConnection = go
           nextAction
           go
 
-recvExactOneReply :: Network.Simple.TCP.Socket -> IO BS.ByteString
+---------------------------------------------------------------------------------------------------------
+-- Slave functions
+
+recvExactOneReply :: MonadIO m => Network.Simple.TCP.Socket -> m BS.ByteString
 recvExactOneReply sock = go mempty
   where
     go acc =
@@ -427,37 +459,62 @@ recvExactOneReply sock = go mempty
           | BS.null chunk -> go acc
           | otherwise     -> pure (acc <> chunk)
 
+awaitServerUpdates :: Socket -> App ()
+awaitServerUpdates sock = go
+  where
+    go :: App ()
+    go = do
+      mb <- liftIO $ recv sock 4096
+      case mb of
+        Nothing  -> pure ()
+        Just buf -> do
+          case runParse buf of
+            Right (Set key val args)             -> void $ setCommand key val args
+            Right (RPush key values)             -> void $ pushCommand key values RightPushCmd
+            Right (LPush key values)             -> void $ pushCommand key values LeftPushCmd
+            Right (LPop key count)               -> void $ applyLPopHelper key count
+            Right (XAdd streamID entryID values) -> void $ xaddCommand streamID entryID values
+            Right (Incr key)                     -> void $ incrCommand key
+            Left e                               -> undefined
+          go
+
 runReplica :: App ()
 runReplica = do
   clientPort <- getPort
-  repl <- getReplication
-  case repl of
-    Slave host port -> do
-      liftIO $ putStrLn ("Trying to connect to " <> host <> " " <> port)
-      _ <- liftIO $ async $ connect host port $ \(_sock, _addr) -> do
-        send _sock $ encodeArray True ["PING"]
-        pongResp <- liftIO $ recvExactOneReply _sock
-        case runSimpleStringParse pongResp of
-          Right "PONG" -> do
-            -- liftIO $ putStrLn "successfully received an OK!"
-            liftIO $ send _sock $ encodeArray True ["REPLCONF", "listening-port", BS8.pack clientPort]
-            replResp1 <- liftIO $ recvExactOneReply _sock
-            case runSimpleStringParse replResp1 of
-              Right "OK" -> do
-                -- liftIO $ putStrLn "Got confirmation form REPLCONF listening port"
-                liftIO $ send _sock $ encodeArray True ["REPLCONF", "capa", "psync2"]
-                replResp2 <- liftIO $ recvExactOneReply _sock
-                case runSimpleStringParse replResp1 of
-                  Right "OK" -> do
-                   -- liftIO $ putStrLn "Got confirmation form REPLCONF capability"
-                   liftIO $ send _sock $ encodeArray True ["PSYNC", "?", "-1"]
-                   -- TODO: parse replPsync to get the replica ID and the offset
-                   replPsync <- liftIO $ recvExactOneReply _sock
-                   -- TODO: parse Rdb file response and update the DB accordingly
-                   pure $ recvExactOneReply _sock
-                   
-      pure mempty
+  getReplication >>= \case
     Master _ _ -> pure mempty
+    -- withRunInIO :: ((App () -> IO ()) -> IO) -> App()
+    Slave host port -> withRunInIO $ \runInIO -> do
+      putStrLn ("Trying to connect to " <> host <> " " <> port)
+      _ <- async $ connect host port $ \(_sock, _addr) ->
+        -- runInIO :: App () -> IO ()
+        runInIO $ do
+          send _sock $ encodeArray True ["PING"]
+          pongResp <- recvExactOneReply _sock
+          case runSimpleStringParse pongResp of
+            Right "PONG" -> do
+              -- liftIO $ putStrLn "successfully received an OK!"
+              liftIO $ send _sock $ encodeArray True ["REPLCONF", "listening-port", BS8.pack clientPort]
+              replResp1 <- recvExactOneReply _sock
+              case runSimpleStringParse replResp1 of
+                Right "OK" -> do
+                  -- liftIO $ putStrLn "Got confirmation form REPLCONF listening port"
+                  liftIO $ send _sock $ encodeArray True ["REPLCONF", "capa", "psync2"]
+                  replResp2 <- recvExactOneReply _sock
+                  case runSimpleStringParse replResp1 of
+                    Right "OK" -> do
+                     -- liftIO $ putStrLn "Got confirmation form REPLCONF capability"
+                     liftIO $ send _sock $ encodeArray True ["PSYNC", "?", "-1"]
+                     -- TODO: parse replPsync to get the replica ID and the offset
+                     replPsync <- recvExactOneReply _sock
+                     -- TODO: parse Rdb file response and update the DB accordingly
+                     rdbFile <- recvExactOneReply _sock
+                     awaitServerUpdates _sock
+                _ -> pure ()   
+            _ -> pure ()
+      pure ()
+
+----------- Slave functions END
 
 main :: IO ()
 main = do
@@ -478,7 +535,8 @@ main = do
               WantMaster -> SharedConfig port (Master (BS8.unpack repID) 0)
               WantSlave wantHost wantPort -> SharedConfig port (Slave wantHost wantPort)
 
-  let sharedEnv = SharedEnv store sharedCfg
+  newReplicas <- newTVarIO []
+  let sharedEnv = SharedEnv store sharedCfg newReplicas
 
   case sharedCfg of
     SharedConfig _ (Master _ _) -> pure ()

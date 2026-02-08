@@ -42,6 +42,8 @@ import Data.Word (Word64)
 import Network.Simple.TCP (Socket)
 import Text.Megaparsec (Parsec)
 
+import UnliftIO (MonadUnliftIO)
+
 import Control.Monad.Reader
 import Control.Monad.State.Strict
 
@@ -161,6 +163,7 @@ data SharedConfig = SharedConfig
 data SharedEnv = SharedEnv
   { senvStore  :: !MemoryStore
   , senvConfig :: !SharedConfig
+  , cenvReplicas :: TVar [Socket]
   }
 
 data ClientConfig = ClientConfig
@@ -170,8 +173,8 @@ data ClientConfig = ClientConfig
   }
 
 data ClientEnv = ClientEnv
-  { cenvShared :: !SharedEnv
-  , cenvConfig :: !ClientConfig
+  { cenvShared   :: !SharedEnv
+  , cenvConfig   :: !ClientConfig
   }
 
 data ClientState = ClientState
@@ -188,7 +191,7 @@ emptyResponse :: ClientApp ()
 emptyResponse = pure ()
 
 newtype App a = App { unApp :: ReaderT SharedEnv IO a }
-  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader SharedEnv)
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader SharedEnv, MonadUnliftIO)
 
 newtype ClientApp a = ClientApp { unClientApp :: StateT ClientState (ReaderT ClientEnv IO) a }
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader ClientEnv, MonadState ClientState)

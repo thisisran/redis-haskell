@@ -193,6 +193,28 @@ parseTYPE n = do
   expectArity [2] n
   Type <$> parseBulkString
 
+parseEntryId :: RedisParser EntryId
+parseEntryId = do
+  void parseBulkStringStart
+  parseAuto <|> (parseMili >>= (\pre -> fullSeq pre <|> missingSeq pre))
+  where
+    parseAuto = do
+      void (B.char 42) -- *
+      B.crlf
+      pure EntryGenNew
+    parseMili = do
+      pre <- L.decimal
+      void (B.char 45) -- '-'
+      pure pre
+    fullSeq p = do
+      post <- L.decimal
+      B.crlf
+      pure (EntryId p post)
+    missingSeq p = do
+      void (B.char 42) -- *
+      B.crlf
+      pure (EntryGenSeq p)
+
 parseXADD :: Int -> RedisParser Command
 parseXADD n = do
   expectMinArity 5 n
@@ -217,28 +239,6 @@ prettifyErrors :: (Text.Megaparsec.Stream.VisualStream s,
       Text.Megaparsec.Error.ShowErrorComponent e) =>
      Text.Megaparsec.Error.ParseErrorBundle s e -> String
 prettifyErrors = errorBundlePretty
-
-parseEntryId :: RedisParser EntryId
-parseEntryId = do
-  void parseBulkStringStart
-  parseAuto <|> (parseMili >>= (\pre -> fullSeq pre <|> missingSeq pre))
-  where
-    parseAuto = do
-      void (B.char 42)
-      B.crlf
-      pure EntryGenNew
-    parseMili = do
-      pre <- L.decimal
-      void (B.char 45) -- '-'
-      pure pre
-    fullSeq p = do
-      post <- L.decimal
-      B.crlf
-      pure (EntryId p post)
-    missingSeq p = do
-      void (B.char 42) -- *
-      B.crlf
-      pure (EntryGenSeq p)
 
 parseFullRange :: RedisParser RangeEntryId
 parseFullRange = do

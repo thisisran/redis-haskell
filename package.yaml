@@ -17,6 +17,7 @@ dependencies:
   - containers # may help with the database structure and debugging
   - unordered-containers
   - random
+  - unliftio
   # - hashable
   - time # may help with the expiry function
   - async # may help with concurrency
