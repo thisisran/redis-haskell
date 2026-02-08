@@ -1,383 +1,365 @@
 module RedisParser
-  ( parseCommand
-  , runParse
-  , runSimpleStringParse
-  , prettifyErrors
+  ( parseOneCommand
+  , parseSimpleString
+  , parseRDBFile
   ) where
 
-import Text.Read (readMaybe)
+-- import Text.Read (readMaybe)
 
 import Control.Monad (unless, void)
 import Data.Char (toUpper)
-import Data.Function (on)
-import Data.List (find)
-import Data.Maybe (isNothing)
-import Text.Megaparsec (takeP, (<?>), parse, errorBundlePretty, (<|>), try, takeWhileP, takeWhile1P)
-import Text.Megaparsec.Stream (VisualStream, TraversableStream)
-import Text.Megaparsec.Error (ShowErrorComponent, ParseErrorBundle)
-import Text.Megaparsec.Char (string)
 
-import qualified Text.Megaparsec as M
-import qualified Text.Megaparsec.Byte as B
+import Data.Maybe (isNothing)
+
+import Control.Applicative ((<|>))
+import Data.Attoparsec.Combinator ((<?>))
+import qualified Data.Attoparsec.ByteString as A
+import qualified Data.Attoparsec.ByteString.Char8 as AC8
+
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
-import qualified Text.Megaparsec.Byte.Lexer as L
 
 import Types
 
-parseBulkString :: RedisParser BS.ByteString
-parseBulkString = do
-  void (B.char 36) -- '$'
-  n <- L.decimal
-  B.crlf
-  takeP (Just "bulk string") n <* B.crlf
+parseOneCommand :: BS.ByteString -> RParserResult
+parseOneCommand input = case A.parse commandParser input of
+                           A.Done rest cmd -> RParsed cmd rest
+                           A.Partial _k    -> RParserNeedMore
+                           A.Fail _ _ msg  -> RParserErr (BS8.pack msg)
 
-parseSimpleString :: RedisParser BS.ByteString
-parseSimpleString = do
-  void (B.char 43) -- '+'
-  takeWhileP (Just "parsing a simple string") (/= 13) <* B.crlf
+parseSimpleString input = case A.parse simpleStringParser input of
+                            A.Done rest str -> SParserFullString str rest
+                            A.Partial _k    -> SParserPartialString
+                            A.Fail _ _ msg  -> SParserError (BS8.pack msg)
 
-parseArrayLen :: RedisParser Int
-parseArrayLen = do
-  void (B.char 42) -- '*'
-  n <- L.decimal
-  B.crlf
-  pure n
+parseRDBFile input = case A.parse rdbFileParser input of
+                       A.Done rest content -> SParserFullString content rest
+                       A.Partial _k        -> SParserPartialString
+                       A.Fail _ _ msg      -> SParserError (BS8.pack msg)
 
-data CommandSpec = CommandSpec
-  { names :: [BS.ByteString]         -- command name(s)
-  , run   :: Int -> RedisParser Command   -- parses remaining bulk args (command name already consumed)
-  }
+simpleStringParser :: A.Parser BS.ByteString
+simpleStringParser = do
+  void $ AC8.char '+'
+  A.takeTill (== 13) <* A.string "\r\n"     -- read until '\r' (not including it)
 
-parseCommand :: RedisParser Command
-parseCommand = do
-  n   <- parseArrayLen
-  cmd <- parseBulkString
+arrayLenParser :: A.Parser Int
+arrayLenParser = do
+  void $ AC8.char '*'
+  AC8.decimal <* crlf
 
-  spec <- maybe (fail "unsupported command") pure (lookupSpec cmd specs)
-  run spec n <?> "command args"
+rdbFileParser :: A.Parser BS.ByteString
+rdbFileParser = do
+  void (AC8.char '$')
+  n <- AC8.decimal <* crlf
+  A.take n
 
-specs :: [CommandSpec]
-specs =
-  [ CommandSpec ["PING"] parsePING
-  , CommandSpec ["ECHO"] parseECHO
-  , CommandSpec ["GET"] parseGET
-  , CommandSpec ["SET"] parseSET
-  , CommandSpec ["RPUSH"] parseRPUSH
-  , CommandSpec ["LPUSH"] parseLPUSH
-  , CommandSpec ["LRANGE"] parseLRANGE
-  , CommandSpec ["LLEN"] parseLLEN
-  , CommandSpec ["LPOP"] parseLPOP
-  , CommandSpec ["BLPOP"] parseBLPOP
-  , CommandSpec ["TYPE"] parseTYPE
-  , CommandSpec ["XADD"] parseXADD
-  , CommandSpec ["XRANGE"] parseXRANGE
-  , CommandSpec ["XREAD"] parseXREAD
-  , CommandSpec ["INCR"] parseINCR
-  , CommandSpec ["MULTI"] parseMULTI
-  , CommandSpec ["EXEC"] parseEXEC
-  , CommandSpec ["DISCARD"] parseDISCARD
-  , CommandSpec ["INFO"] parseINFO
-  , CommandSpec ["REPLCONF"] parseREPLCONF
-  , CommandSpec ["PSYNC"] parsePSYNC
-  ]
+bulkStringParser :: A.Parser BS.ByteString
+bulkStringParser = do
+  void $ AC8.char '$'
+  n <- AC8.decimal <* crlf
+  A.take n <* crlf
 
-lookupSpec :: BS.ByteString -> [CommandSpec] -> Maybe CommandSpec
-lookupSpec cmd = find (\s -> any (ciEq cmd) (names s))
-
-ciEq :: BS.ByteString -> BS.ByteString -> Bool
-ciEq = (==) `on` BS8.map toUpper
-
-expectArity :: [Int] -> Int -> RedisParser ()
-expectArity allowed n =
-  unless (n `elem` allowed) $
-    fail ("wrong arity (expected " ++ show allowed ++ ", got " ++ show n ++ ")")
-
-expectMinArity :: Int -> Int -> RedisParser ()
-expectMinArity minN n =
-  unless (n >= minN) $
-    fail ("wrong arity (expected >= " ++ show minN ++ ", got " ++ show n ++ ")")
-
-readIntBS :: BS.ByteString -> RedisParser Int
-readIntBS bs = case BS8.readInt bs of
-  Just (n, rest) | BS8.null rest -> pure n
-  _ -> fail "expected integer"
-
-readDoubleBS :: BS.ByteString -> RedisParser Double
-readDoubleBS bs = case (readMaybe . BS8.unpack) bs of
-  Just n -> pure n
-  _ -> fail "expected double/integer"
-
+commandParser :: A.Parser Command
+commandParser = do
+  n <- arrayLenParser
+  cmd <- fmap (BS8.map toUpper) bulkStringParser
+  case cmd of
+    "PING"     -> pingParser n
+    "ECHO"     -> echoParser n
+    "GET"      -> getParser n
+    "SET"      -> setParser n
+    "RPUSH"    -> rpushParser n
+    "LPUSH"    -> lpushParser n
+    "LRANGE"   -> lrangeParser n
+    "LLEN"     -> llenParser n
+    "LPOP"     -> lpopParser n
+    "BLPOP"    -> blpopParser n
+    "TYPE"     -> typeParser n
+    "XADD"     -> xaddParser n
+    "XRANGE"   -> xrangeParser n
+    "XREAD"    -> xreadParser n
+    "INCR"     -> incrParser n
+    "MULTI"    -> multiParser n
+    "EXEC"     -> execParser n
+    "DISCARD"  -> discardParser n
+    "INFO"     -> infoParser n
+    "REPLCONF" -> replconfParser n
+    "PSYNC"    -> psyncParser n
+    _          -> fail "unsupported command"
 -- ===== command implementations =====
 -- Note: n counts *all* array elements including the command name itself.
 
-parsePING :: Int -> RedisParser Command
-parsePING n = do
+pingParser :: Int -> A.Parser Command
+pingParser n = do
   expectArity [1] n
   pure Ping
 
-parseECHO :: Int -> RedisParser Command
-parseECHO n = do
+echoParser :: Int -> A.Parser Command
+echoParser n = do
   expectArity [2] n
-  Echo <$> parseBulkString                   
+  Echo <$> bulkStringParser
 
-parseGET :: Int -> RedisParser Command
-parseGET n = do
+getParser :: Int -> A.Parser Command
+getParser n = do
   expectArity [2] n
-  Get <$> parseBulkString
+  Get <$> bulkStringParser
 
-parseSET :: Int -> RedisParser Command
-parseSET n = do
+expiryParser :: A.Parser SetExpiry
+expiryParser = do
+  opt <- fmap (BS8.map toUpper) bulkStringParser
+  numBs <- bulkStringParser
+  num <- case BS8.readInt numBs of
+    Just (x, rest) | BS.null rest -> pure x
+    _ -> fail "expected integer for expiry setting"
+  case opt of
+    "EX" -> pure (EX num)
+    "PX" -> pure (PX num)
+    _    -> fail "expected EX or PX for expiry setting"
+
+setParser :: Int -> A.Parser Command
+setParser n = do
   expectArity [3,5] n
-  key <- parseBulkString
-  val <- parseBulkString
-  expiry <- if n == 5 then Just <$> parseExpiry else pure Nothing
+  key <- bulkStringParser
+  val <- bulkStringParser
+  expiry <- if n == 5 then Just <$> expiryParser else pure Nothing
   pure (Set key val expiry)
 
-parseExpiry :: RedisParser SetExpiry
-parseExpiry = do
-  opt <- parseBulkString
-  num <- readIntBS =<< parseBulkString
-  if opt `ciEq` "EX" then pure (EX num)
-  else if opt `ciEq` "PX" then pure (PX num)
-         else fail "expected EX or PX"
+countBulkStringParser :: Int -> A.Parser [BS.ByteString]
+countBulkStringParser k
+  | k <= 0    = pure []
+  | otherwise = sequenceA (replicate k bulkStringParser)
 
-parseRPUSH :: Int -> RedisParser Command
-parseRPUSH n = do
+pushParser :: Int -> A.Parser (BS.ByteString, [BS.ByteString])
+pushParser n = do
   expectMinArity 3 n
-  key    <- parseBulkString
-  values <- countBulk (n - 2)
+  key    <- bulkStringParser
+  values <- countBulkStringParser (n - 2)
+  pure (key, values)
+  
+rpushParser :: Int -> A.Parser Command
+rpushParser n = do
+  (key, values) <- pushParser n
   pure (RPush key values)
 
-parseLPUSH :: Int -> RedisParser Command
-parseLPUSH n = do
-  expectMinArity 3 n
-  key    <- parseBulkString
-  values <- countBulk (n - 2)
+lpushParser :: Int -> A.Parser Command
+lpushParser n = do
+  (key, values) <- pushParser n
   pure (LPush key values)
 
-countBulk :: Int -> RedisParser [BS.ByteString]
-countBulk k
-  | k <= 0    = pure []
-  | otherwise = sequenceA (replicate k parseBulkString)
+bulkAs :: A.Parser a -> A.Parser a
+bulkAs p = do
+  bs <- bulkStringParser
+  case A.parseOnly (p <* A.endOfInput) bs of
+    Left err -> fail err
+    Right x  -> pure x
 
-parseLRANGE :: Int -> RedisParser Command
-parseLRANGE n = do
+signedIntBulk :: A.Parser Int
+signedIntBulk = bulkAs (AC8.signed AC8.decimal)
+
+lrangeParser :: Int -> A.Parser Command
+lrangeParser n = do
   expectArity [4] n
-  key   <- parseBulkString
-  start <- readIntBS =<< parseBulkString
-  stop  <- readIntBS =<< parseBulkString
-  pure (LRange key start stop)
+  LRange <$> bulkStringParser <*> signedIntBulk <*> signedIntBulk
 
-parseLLEN :: Int -> RedisParser Command
-parseLLEN n = do
+llenParser :: Int -> A.Parser Command
+llenParser n = do
   expectArity [2] n
-  LLen <$> parseBulkString
+  LLen <$> bulkStringParser
 
-parseLPOP :: Int -> RedisParser Command
-parseLPOP n = do
+lpopParser :: Int -> A.Parser Command
+lpopParser n = do
   expectArity [2, 3] n
-  key <- parseBulkString
-  count <- if n == 3 then readIntBS =<< parseBulkString else pure 1
+  key <- bulkStringParser
+  count <- if n == 3
+           then  do
+             countBs <- bulkStringParser
+             case BS8.readInt countBs of
+               Just (x, rest) | BS.null rest -> pure x
+               _ -> fail "expected integer (count) for lpop"
+           else pure 1
   pure (LPop key count)
 
-parseBLPOP :: Int -> RedisParser Command
-parseBLPOP n = do
+blpopParser :: Int -> A.Parser Command
+blpopParser n = do
   expectArity [3] n
-  key <- parseBulkString
-  timeout <- readDoubleBS =<< parseBulkString
-  pure (BLPop key timeout)
+  key <- bulkStringParser <* AC8.char '$' <* AC8.decimal <* crlf
+  timeout <- AC8.double <* crlf
+  pure $ BLPop key timeout
 
-parseTYPE :: Int -> RedisParser Command
-parseTYPE n = do
+typeParser :: Int -> A.Parser Command
+typeParser n = do
   expectArity [2] n
-  Type <$> parseBulkString
+  Type <$> bulkStringParser
 
-parseEntryId :: RedisParser EntryId
-parseEntryId = do
-  void parseBulkStringStart
+crlf :: A.Parser BS.ByteString
+crlf = A.string "\r\n"
+
+bulkStringStartParser :: A.Parser BS.ByteString
+bulkStringStartParser = do
+  void (AC8.char '$')
+  void AC8.decimal
+  crlf
+
+entryIdParser :: A.Parser EntryId
+entryIdParser = do
+  void bulkStringStartParser
   parseAuto <|> (parseMili >>= (\pre -> fullSeq pre <|> missingSeq pre))
   where
-    parseAuto = do
-      void (B.char 42) -- *
-      B.crlf
-      pure EntryGenNew
     parseMili = do
-      pre <- L.decimal
-      void (B.char 45) -- '-'
+      pre <- AC8.decimal
+      void (AC8.char '-')
       pure pre
+    parseAuto = do
+      void (AC8.char '*') <* crlf
+      pure EntryGenNew
     fullSeq p = do
-      post <- L.decimal
-      B.crlf
+      post <- AC8.decimal <* crlf
       pure (EntryId p post)
     missingSeq p = do
-      void (B.char 42) -- *
-      B.crlf
+      void (AC8.char '*') <* crlf
       pure (EntryGenSeq p)
 
-parseXADD :: Int -> RedisParser Command
-parseXADD n = do
-  expectMinArity 5 n
-  streamID <- parseBulkString
-  entryID <- parseEntryId
-  values <- countKeyValue $ (n - 3) `div` 2
-  pure (XAdd streamID entryID values)
-
-countKeyValue :: Int -> RedisParser [(BS.ByteString, BS.ByteString)]
-countKeyValue k
+countKeyValueParser :: Int -> A.Parser [(BS.ByteString, BS.ByteString)]
+countKeyValueParser k
   | k <= 0    = pure []
   | otherwise = sequenceA (replicate k (do
-    key <- parseBulkString
-    value <- parseBulkString
+    key <- bulkStringParser
+    value <- bulkStringParser
     pure (key, value)))
 
-runParse = parse parseCommand "<input>"
-runSimpleStringParse = parse parseSimpleString "<server_response>"
+xaddParser :: Int -> A.Parser Command
+xaddParser n = do
+  expectMinArity 5 n
+  streamID <- bulkStringParser
+  entryID <- entryIdParser
+  values <- countKeyValueParser $ (n - 3) `div` 2
+  pure (XAdd streamID entryID values)
 
-prettifyErrors :: (Text.Megaparsec.Stream.VisualStream s,
-      Text.Megaparsec.Stream.TraversableStream s,
-      Text.Megaparsec.Error.ShowErrorComponent e) =>
-     Text.Megaparsec.Error.ParseErrorBundle s e -> String
-prettifyErrors = errorBundlePretty
-
-parseFullRange :: RedisParser RangeEntryId
-parseFullRange = do
-  void parseBulkStringStart
-  mili <- L.decimal
-  void (B.char 45)
-  seq <- L.decimal
-  B.crlf
+fullRangeParser :: A.Parser RangeEntryId
+fullRangeParser = do
+  void bulkStringStartParser
+  mili <- AC8.decimal <* AC8.char '-'
+  seq <- AC8.decimal <* crlf
   pure $ RangeEntryId mili seq
 
-parseMiliRange :: RedisParser RangeEntryId
-parseMiliRange = do
-  void parseBulkStringStart
-  mili <- L.decimal
-  B.crlf
+miliRangeParser :: A.Parser RangeEntryId
+miliRangeParser = do
+  void bulkStringStartParser
+  mili <- AC8.decimal <* crlf
   pure $ RangeMili mili
 
-parseMinusMiliRange :: RedisParser RangeEntryId
+parseMinusMiliRange :: A.Parser RangeEntryId
 parseMinusMiliRange = do
-  void parseBulkStringStart
-  void (B.char 45)
-  B.crlf
+  void bulkStringStartParser
+  void (AC8.char '-') <* crlf
   pure RangeMinusPlus
 
-parsePlusSeqRange :: RedisParser RangeEntryId
-parsePlusSeqRange = do
-  void parseBulkStringStart
-  void (B.char 43)
-  B.crlf
+plusSeqRangeParser :: A.Parser RangeEntryId
+plusSeqRangeParser = do
+  void bulkStringStartParser <* AC8.char '+' <* crlf
   pure RangeMinusPlus
 
-parseDollarSign :: RedisParser RangeEntryId
-parseDollarSign = do
-  void parseBulkStringStart
-  void (B.char 36)
-  B.crlf
+dollarSignParser :: A.Parser RangeEntryId
+dollarSignParser = do
+  void bulkStringStartParser
+  void (AC8.char '$') <* crlf
   pure RangeDollar
 
-parseStartRange :: RedisParser RangeEntryId
-parseStartRange = try (try parseFullRange <|> try parseMiliRange <|> parseMinusMiliRange) <|> parseDollarSign
+endRangeParser :: A.Parser RangeEntryId
+endRangeParser = fullRangeParser <|> miliRangeParser <|> plusSeqRangeParser
 
-parseEndRange :: RedisParser RangeEntryId
-parseEndRange = try parseFullRange <|> try parseMiliRange <|> parsePlusSeqRange
+startRangeParser :: A.Parser RangeEntryId
+startRangeParser = fullRangeParser <|> miliRangeParser <|> parseMinusMiliRange <|> dollarSignParser
 
-parseXRANGE :: Int -> RedisParser Command
-parseXRANGE n = do
+xrangeParser :: Int -> A.Parser Command
+xrangeParser n = do
   expectMinArity 4 n
-  XRange <$> parseBulkString <*> parseStartRange <*> parseEndRange
+  XRange <$> bulkStringParser <*> startRangeParser <*> endRangeParser
 
-countStartRange :: Int -> RedisParser [RangeEntryId]
+blockKeywordParser :: A.Parser (Maybe Double)
+blockKeywordParser = do
+   (void bulkStringStartParser >> (A.string "block" >> crlf >> void bulkStringStartParser >> (Just <$> AC8.double) <* crlf)) <|> pure Nothing
+
+countStartRange :: Int -> A.Parser [RangeEntryId]
 countStartRange k
   | k <= 0    = pure []
-  | otherwise = sequenceA (replicate k parseStartRange)
+  | otherwise = sequenceA (replicate k startRangeParser)
 
-parseBulkStringStart :: RedisParser BS.ByteString
-parseBulkStringStart = do
-  void (B.char 36) -- '$'
-  L.decimal
-  B.crlf
-
-parseBlockKeyword :: RedisParser (Maybe Double)
-parseBlockKeyword = do
-  try (void parseBulkStringStart >> (B.string' "block" >> B.crlf >> void parseBulkStringStart >> (Just <$> L.decimal) <* B.crlf)) <|> pure Nothing
-
-parseXREAD :: Int -> RedisParser Command
-parseXREAD n = do
+xreadParser :: Int -> A.Parser Command
+xreadParser n = do
   expectMinArity 4 n
-  timeout <- parseBlockKeyword
+  timeout <- blockKeywordParser
   let count = if isNothing timeout then 2 else 4
-  void parseBulkStringStart
-  B.string' "streams"
-  B.crlf
-  keys <- countBulk $ (n - count) `div` 2
+  void bulkStringStartParser *> A.string "streams" <* crlf
+  keys <- countBulkStringParser $ (n - count) `div` 2
   ids <- countStartRange $ (n - count) `div` 2
   pure (XRead (zip keys ids) timeout)
 
-parseINCR :: Int -> RedisParser Command
-parseINCR n = do
+incrParser :: Int -> A.Parser Command
+incrParser n = do
   expectArity [2] n
-  Incr <$> parseBulkString
+  Incr <$> bulkStringParser
 
-parseMULTI :: Int -> RedisParser Command
-parseMULTI n = do
+multiParser :: Int -> A.Parser Command
+multiParser n = do
   expectArity [1] n
   pure Multi
 
-parseEXEC :: Int -> RedisParser Command
-parseEXEC n = do
+execParser :: Int -> A.Parser Command
+execParser n = do
   expectArity [1] n
   pure Exec
 
-parseDISCARD :: Int -> RedisParser Command
-parseDISCARD n = do
+discardParser :: Int -> A.Parser Command
+discardParser n = do
   expectArity [1] n
-  pure Discard 
+  pure Discard
 
-parseINFO :: Int -> RedisParser Command
-parseINFO n = do
+infoParser :: Int -> A.Parser Command
+infoParser n = do
   expectMinArity 1 n
   if n == 1
   then pure $ Info FullInfo
   else do
-      try parseReplication <|> try parseServer <|> try parseClients <|> parseMemory
-  where parseReplication = void parseBulkStringStart >> B.string' "replication" >> B.crlf >> pure (Info Replication)
-        parseServer = void parseBulkStringStart >> B.string' "server" >> B.crlf >> pure (Info Server)
-        parseClients = void parseBulkStringStart >> B.string' "clients" >> B.crlf >> pure (Info Clients)
-        parseMemory = void parseBulkStringStart >> B.string' "memory" >> B.crlf >> pure (Info Memory)
+        parseReplication <|> parseServer <|> parseClients <|> parseMemory
+        where
+           parseReplication = void bulkStringStartParser >> A.string "replication" >> crlf >> pure (Info Replication)
+           parseServer = void bulkStringStartParser >> A.string "server" >> crlf >> pure (Info Server)
+           parseClients = void bulkStringStartParser >> A.string "clients" >> crlf >> pure (Info Clients)
+           parseMemory = void bulkStringStartParser >> A.string "memory" >> crlf >> pure (Info Memory)
 
-parseREPLCONF :: Int  -> RedisParser Command
-parseREPLCONF n = do
+replconfParser :: Int  -> A.Parser Command
+replconfParser n = do
   expectArity [3] n
-  try parseListeningPort <|> parseCapability
-  where parseListeningPort = do
-          void parseBulkStringStart
-          B.string' "listening-port"
-          B.crlf
-          void parseBulkStringStart
-          port <- takeWhile1P (Just "parsing listening port") isDigitW8
+  listeningPortParser <|> capabilityParser
+  where listeningPortParser = do
+          void bulkStringStartParser *> A.string "listening-port" <* crlf *> void bulkStringStartParser
+          port <- (A.takeWhile1 isDigitW8 <* crlf) <?> "parsing listening port"
           pure $ ReplConf (ListeningPort port)
         isDigitW8 w = w >= 48 && w <= 57
-        parseCapability = do
-          void parseBulkStringStart
-          B.string' "capa"
-          B.crlf
-          ReplConf . Capa <$> parseBulkString
+        capabilityParser = do
+          void bulkStringStartParser <* A.string "capa" <* crlf
+          ReplConf . Capa <$> bulkStringParser
 
-parsePSYNC :: Int -> RedisParser Command
-parsePSYNC n = do
+psyncParser :: Int -> A.Parser Command
+psyncParser n = do
   expectArity [3] n
-  try parseUnknown <|> parseFull
-      where parseUnknown = do
-              parseBulkStringStart
-              void $ B.char 63
-              void B.crlf
+  unknownParser <|> fullParser
+      where unknownParser = do
+              bulkStringStartParser <* AC8.char '?' <* crlf
               pure $ Psync PSyncUnknown
-            parseFull = do
-              replID <- parseBulkString
-              parseBulkStringStart
-              replOffset <- L.decimal <* B.crlf
+            fullParser = do
+              replID <- bulkStringParser
+              bulkStringStartParser
+              replOffset <- AC8.decimal <* crlf
               pure $ Psync (PSyncFull replID replOffset)
-              
-              
+
+expectArity :: [Int] -> Int -> A.Parser ()
+expectArity allowed n =
+  unless (n `elem` allowed) $
+    fail ("wrong arity: expected " ++ show allowed ++ ", got " ++ show n)
+
+expectMinArity :: Int -> Int -> A.Parser ()
+expectMinArity minN n =
+  unless (n >= minN) $
+    fail ("wrong arity (expected >= " ++ show minN ++ ", got " ++ show n ++ ")")

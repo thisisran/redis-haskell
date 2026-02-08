@@ -2,8 +2,10 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 module Types
-  ( RedisParser
+  ( RParserResult (..)
   , Command (..)
+  , StringParserResult (..)
+  , TCPReceivedResult (..)
   , SetExpiry (..)
   , PushCommand (..)
   , EntryId (..)
@@ -40,7 +42,6 @@ module Types
 import Data.Void (Void)
 import Data.Word (Word64)
 import Network.Simple.TCP (Socket)
-import Text.Megaparsec (Parsec)
 
 import UnliftIO (MonadUnliftIO)
 
@@ -54,7 +55,10 @@ import qualified Data.IntSet as IS
 
 import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar')
 
-type RedisParser = Parsec Void BS.ByteString
+data RParserResult = RParsed !Command !BS.ByteString
+                   | RParserNeedMore
+                   | RParserErr !BS.ByteString
+                   deriving stock (Show)
 
 data SetExpiry = EX Int | PX Int
   deriving (Show, Eq)
@@ -77,6 +81,14 @@ data PSyncRequest = PSyncUnknown
                   | PSyncFull BS.ByteString Word64
                   deriving (Eq, Show)
                   
+data StringParserResult = SParserFullString !BS.ByteString !BS.ByteString
+                        | SParserPartialString
+                        | SParserError !BS.ByteString
+                        deriving stock (Eq, Show)
+
+data TCPReceivedResult = TCPResultFull !BS.ByteString !BS.ByteString
+                       | TCPResultError !BS.ByteString
+                       deriving stock (Eq, Show)
 
 data Command
   = Ping

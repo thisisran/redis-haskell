@@ -149,7 +149,9 @@ lpopCommand :: BS.ByteString -> Int -> ClientApp Response
 lpopCommand = applyLPopHelper
 
 blpopCommand :: BS.ByteString -> Double -> Int -> ClientApp Response
-blpopCommand key timeout clientID = go 0
+blpopCommand key timeout clientID = do
+  liftIO $ hPutStrLn stderr ("Starting BLPop with timeout: " <> show timeout)
+  go 0
   where
     go elapsed
       | elapsed > timeout && timeout > 0 = do
@@ -408,75 +410,95 @@ psyncCommand PSyncUnknown = do
     _ -> pure $ Response mempty emptyResponse -- A slave will never get a PSync command from a client
 
 handleConnection :: ClientApp ()
-handleConnection = go
+handleConnection = go ""
   where
-    go = do
+    go acc = do
       sock <- getSocket
       clientID <- getClientID
       mb <- liftIO $ recv sock 4096
       case mb of
         Nothing -> pure ()
         Just buf -> do
-          (Response resp nextAction) <- case runParse buf of
-            Right Ping -> handleMultiCmd $ pure $ Response (encodeSimpleString "PONG") emptyResponse
-            Right (Echo str) -> handleMultiCmd $ pure $ Response (encodeBulkString str) emptyResponse
-            Right (Set key val args) -> handleMultiCmd $ setCommand key val args
-            Right (Get key) -> handleMultiCmd $ getCommand key
-            Right (RPush key values) -> handleMultiCmd $ pushCommand key values RightPushCmd
-            Right (LPush key values) -> handleMultiCmd $ pushCommand key values LeftPushCmd
-            Right (LRange key start stop) -> handleMultiCmd $ lrangeCommand key start stop
-            Right (LLen key) -> handleMultiCmd $ llenCommand key
-            Right (LPop key count) -> handleMultiCmd $ lpopCommand key count
-            Right (BLPop key timeout) -> handleMultiCmd $ blpopCommand key timeout clientID
-            Right (Type key) -> handleMultiCmd $ typeCommand key
-            Right (XAdd streamID entryID values) -> handleMultiCmd $ xaddCommand streamID entryID values
-            Right (XRange key start end) -> handleMultiCmd $ xrangeCommand key start end
-            Right (XRead keysIds timeout) -> handleMultiCmd $ xreadCommand keysIds timeout
-            Right (Incr key) -> handleMultiCmd $ incrCommand key
-            Right Multi -> do
-              updateMulti True
-              pure $ Response (encodeSimpleString "OK") emptyResponse
-            Right Exec -> execCommand
-            Right Discard -> discardCommand
-            Right (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
-            Right (ReplConf replOptions) -> replConfCommand replOptions
-            Right (Psync req) -> psyncCommand req
-            Left e -> pure $ Response (U.renderParseError e) emptyResponse
-          liftIO $ send sock resp
-          nextAction
-          go
-
+          case parseOneCommand buf of
+            RParserNeedMore -> go (acc <> buf)
+            -- keep partial bytes for next recv
+            RParsed cmd rest -> do
+              Response resp nextAction <- case cmd of
+                                            Ping -> handleMultiCmd $ pure $ Response (encodeSimpleString "PONG") emptyResponse
+                                            (Echo str) -> handleMultiCmd $ pure $ Response (encodeBulkString str) emptyResponse
+                                            (Set key val args) -> handleMultiCmd $ setCommand key val args
+                                            (Get key) -> handleMultiCmd $ getCommand key
+                                            (RPush key values) -> handleMultiCmd $ pushCommand key values RightPushCmd
+                                            (LPush key values) -> handleMultiCmd $ pushCommand key values LeftPushCmd
+                                            (LRange key start stop) -> handleMultiCmd $ lrangeCommand key start stop
+                                            (LLen key) -> handleMultiCmd $ llenCommand key
+                                            (LPop key count) -> handleMultiCmd $ lpopCommand key count
+                                            (BLPop key timeout) -> handleMultiCmd $ blpopCommand key timeout clientID
+                                            (Type key) -> handleMultiCmd $ typeCommand key
+                                            (XAdd streamID entryID values) -> handleMultiCmd $ xaddCommand streamID entryID values
+                                            (XRange key start end) -> handleMultiCmd $ xrangeCommand key start end
+                                            (XRead keysIds timeout) -> handleMultiCmd $ xreadCommand keysIds timeout
+                                            (Incr key) -> handleMultiCmd $ incrCommand key
+                                            Multi -> do
+                                              updateMulti True
+                                              pure $ Response (encodeSimpleString "OK") emptyResponse
+                                            Exec -> execCommand
+                                            Discard -> discardCommand
+                                            (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
+                                            (ReplConf replOptions) -> replConfCommand replOptions
+                                            (Psync req) -> psyncCommand req
+              liftIO $ send sock resp
+              nextAction
+              go rest                -- rest may already contain next command
+            RParserErr e -> do
+              liftIO $ send sock e
+      
 ---------------------------------------------------------------------------------------------------------
 -- Slave functions
 
-recvExactOneReply :: MonadIO m => Network.Simple.TCP.Socket -> m BS.ByteString
-recvExactOneReply sock = go mempty
+recvByParser :: (BS.ByteString -> StringParserResult) -> Socket -> BS.ByteString -> App TCPReceivedResult
+recvByParser parser sock = go
   where
-    go acc =
-      recv sock 4096 >>= \case
-        Nothing -> pure acc
-        Just chunk
-          | BS.null chunk -> go acc
-          | otherwise     -> pure (acc <> chunk)
+    go acc = do
+      case parser acc of
+        SParserFullString str rest -> pure $ TCPResultFull str rest
+        SParserPartialString       -> recv sock 4096 >>= \case
+          Nothing -> pure $ TCPResultError "Received only partial response"
+          Just chunk -> go (acc <> chunk)
+        SParserError msg           -> pure $ TCPResultError msg
 
-awaitServerUpdates :: Socket -> App ()
+recvSimpleResponse :: Socket -> BS.ByteString -> App TCPReceivedResult
+recvSimpleResponse = recvByParser parseSimpleString
+
+recvRDBFile :: Socket -> BS.ByteString -> App TCPReceivedResult
+recvRDBFile = recvByParser parseRDBFile
+
+awaitServerUpdates :: Socket -> BS.ByteString -> App ()
 awaitServerUpdates sock = go
   where
-    go :: App ()
-    go = do
-      mb <- liftIO $ recv sock 4096
+    go :: BS.ByteString -> App ()
+    go buffered = do
+      mb <- if BS.null buffered then liftIO (recv sock 4096) else pure (Just buffered)
       case mb of
-        Nothing  -> pure ()
-        Just buf -> do
-          case runParse buf of
-            Right (Set key val args)             -> void $ setCommand key val args
-            Right (RPush key values)             -> void $ pushCommand key values RightPushCmd
-            Right (LPush key values)             -> void $ pushCommand key values LeftPushCmd
-            Right (LPop key count)               -> void $ applyLPopHelper key count
-            Right (XAdd streamID entryID values) -> void $ xaddCommand streamID entryID values
-            Right (Incr key)                     -> void $ incrCommand key
-            Left e                               -> undefined
-          go
+        Nothing -> pure ()
+        Just buf ->
+          case parseOneCommand buf of
+            RParsed cmd rest -> do
+              case cmd of
+                Set key val args        -> void $ setCommand key val args
+                RPush key values        -> void $ pushCommand key values RightPushCmd
+                LPush key values        -> void $ pushCommand key values LeftPushCmd
+                LPop key count          -> void $ applyLPopHelper key count
+                XAdd streamID entryID v -> void $ xaddCommand streamID entryID v
+                Incr key                -> void $ incrCommand key
+                _                       -> pure ()
+              go rest
+            RParserNeedMore -> do
+              mbMore <- liftIO $ recv sock 4096
+              case mbMore of
+                Nothing   -> pure () -- TODO: proper error reporting/propagaton, Server closed the connection for some reason
+                Just more -> go (buf <> more)
+            RParserErr _ -> pure () -- TODO: proper error reporting/propagaton
 
 runReplica :: App ()
 runReplica = do
@@ -490,28 +512,40 @@ runReplica = do
         -- runInIO :: App () -> IO ()
         runInIO $ do
           send _sock $ encodeArray True ["PING"]
-          pongResp <- recvExactOneReply _sock
-          case runSimpleStringParse pongResp of
-            Right "PONG" -> do
-              -- liftIO $ putStrLn "successfully received an OK!"
-              liftIO $ send _sock $ encodeArray True ["REPLCONF", "listening-port", BS8.pack clientPort]
-              replResp1 <- recvExactOneReply _sock
-              case runSimpleStringParse replResp1 of
-                Right "OK" -> do
-                  -- liftIO $ putStrLn "Got confirmation form REPLCONF listening port"
-                  liftIO $ send _sock $ encodeArray True ["REPLCONF", "capa", "psync2"]
-                  replResp2 <- recvExactOneReply _sock
-                  case runSimpleStringParse replResp1 of
-                    Right "OK" -> do
-                     -- liftIO $ putStrLn "Got confirmation form REPLCONF capability"
-                     liftIO $ send _sock $ encodeArray True ["PSYNC", "?", "-1"]
-                     -- TODO: parse replPsync to get the replica ID and the offset
-                     replPsync <- recvExactOneReply _sock
-                     -- TODO: parse Rdb file response and update the DB accordingly
-                     rdbFile <- recvExactOneReply _sock
-                     awaitServerUpdates _sock
-                _ -> pure ()   
-            _ -> pure ()
+          respPing <- recvSimpleResponse _sock mempty
+          case respPing of
+            TCPResultFull pongResp pending0 ->
+              case pongResp of
+                "PONG" -> do
+                  liftIO $ send _sock $ encodeArray True ["REPLCONF", "listening-port", BS8.pack clientPort]
+                  respReplConf1 <- recvSimpleResponse _sock pending0
+                  case respReplConf1 of
+                    TCPResultFull replResp1 pending1 ->
+                      case replResp1 of
+                        "OK" -> do
+                          liftIO $ send _sock $ encodeArray True ["REPLCONF", "capa", "psync2"]
+                          respReplConf2 <- recvSimpleResponse _sock pending1
+                          case respReplConf2 of
+                            TCPResultFull replResp2 pending2 ->
+                              case replResp2 of
+                                "OK" -> do
+                                  liftIO $ send _sock $ encodeArray True ["PSYNC", "?", "-1"]
+                                  respPsync <- recvSimpleResponse _sock pending2
+                                  case respPsync of
+                                    TCPResultFull replPsync pending3 -> do
+                                        -- TODO: parse replPsync to get the replica ID and the offset
+                                        -- TODO: parse Rdb file response and update the DB accordingly
+                                        respRDBFile <- recvRDBFile _sock pending3
+                                        case respRDBFile of
+                                          TCPResultFull rdbFile pending4 -> awaitServerUpdates _sock pending4
+                                          TCPResultError err -> liftIO $ hPutStrLn stderr ("Replica mode: " <> BS8.unpack err) 
+                                    TCPResultError err -> liftIO $ hPutStrLn stderr ("Replica mode: " <> BS8.unpack err)
+                                _ -> liftIO $ hPutStrLn stderr "Replica mode: failed hankshake, did not receive confirmation for REPLCONF capa psync2"
+                            TCPResultError err -> liftIO $ hPutStrLn stderr ("Replica mode: " <> BS8.unpack err)
+                        _ -> liftIO $ hPutStrLn stderr "Replica mode: failed hankshake, did not receive confirmation for REPLCONF listening-port"
+                    TCPResultError err -> liftIO $ hPutStrLn stderr ("Replica mode: " <> BS8.unpack err)
+                _ -> liftIO $ hPutStrLn stderr "Replica mode: failed hankshake, did not receive reponse to PING"
+            TCPResultError err -> liftIO $ hPutStrLn stderr ("Replica mode: " <> BS8.unpack err)
       pure ()
 
 ----------- Slave functions END

@@ -25,10 +25,10 @@ dependencies:
   - base64-bytestring
   # Parsing libs
   - optparse-applicative
-  - megaparsec
+  # - megaparsec
   # - parser-combinators
   # - parsec
-  # - attoparsec
+  - attoparsec
 
 executables:
   codecrafters-redis-exe:

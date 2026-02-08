@@ -7,7 +7,7 @@ module Utilities
   , hasElapsedSince
   , entryIdToBS
   , range
-  , renderParseError
+  -- , renderParseError
   , randomAlphaNum40BS
   , decodeRdbBase64
   , emptyRdbFile
@@ -17,7 +17,7 @@ import System.Random.Stateful (uniformRM, globalStdGen)
 
 import Control.Monad (replicateM, guard)
 import Data.Char (toLower)
-import Text.Megaparsec (errorBundlePretty,  ParseErrorBundle)
+-- import Text.Megaparsec (errorBundlePretty,  ParseErrorBundle)
 import Text.Read (readMaybe)
 
 import Data.Void (Void)
@@ -81,11 +81,11 @@ entryIdToBS (EntryId ms seq) =
     BB.toLazyByteString $
       BB.word64Dec ms <> BB.char7 '-' <> BB.word64Dec seq
 
-renderParseError :: ParseErrorBundle BS.ByteString Void -> BS.ByteString
-renderParseError =
- BS8.pack . take 200 . oneLine . errorBundlePretty
- where
-  oneLine = map (\c -> if c == '\n' || c == '\r' then ' ' else c)
+-- renderParseError :: ParseErrorBundle BS.ByteString Void -> BS.ByteString
+-- renderParseError =
+--  BS8.pack . take 200 . oneLine . errorBundlePretty
+--  where
+--   oneLine = map (\c -> if c == '\n' || c == '\r' then ' ' else c)
 
 randomAlphaNum40BS :: IO BS.ByteString
 randomAlphaNum40BS = BS8.pack <$> replicateM 40 pick
