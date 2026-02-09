@@ -409,6 +409,9 @@ psyncCommand PSyncUnknown = do
       pure $ Response (encodeSimpleString $ "FULLRESYNC " <> BS8.pack repID <> " 0") sendSnapshot
     _ -> pure $ Response mempty emptyResponse -- A slave will never get a PSync command from a client
 
+waitCommand :: Int -> Double -> ClientApp Response
+waitCommand _ _ = pure $ Response (encodeInteger 0) emptyResponse
+
 handleConnection :: ClientApp ()
 handleConnection = go ""
   where
@@ -419,6 +422,7 @@ handleConnection = go ""
       case mb of
         Nothing -> pure ()
         Just buf -> do
+          -- liftIO $ hPutStrLn stderr ("Received: " <> BS8.unpack buf)
           case parseOneCommand buf of
             RParserNeedMore -> go (acc <> buf)
             -- keep partial bytes for next recv
@@ -447,6 +451,7 @@ handleConnection = go ""
                                             (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
                                             (ReplConf replOptions) -> replConfCommand replOptions
                                             (Psync req) -> psyncCommand req
+                                            (Wait replicaNum timeout) -> waitCommand replicaNum timeout
               liftIO $ send sock resp
               nextAction
               go rest                -- rest may already contain next command

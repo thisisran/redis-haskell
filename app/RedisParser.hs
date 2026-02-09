@@ -85,9 +85,19 @@ commandParser = do
     "INFO"     -> infoParser n
     "REPLCONF" -> replconfParser n
     "PSYNC"    -> psyncParser n
+    "WAIT"     -> waitParser n
     _          -> fail "unsupported command"
 -- ===== command implementations =====
 -- Note: n counts *all* array elements including the command name itself.
+
+-- *3\r\n$4\r\nWAIT\r\n$1\r\n0\r\n$5\r\n60000\r\n
+waitParser :: Int -> A.Parser Command
+waitParser n = do
+  expectArity [3] n
+  void bulkStringStartParser
+  n <- AC8.decimal <* crlf
+  timeout <- bulkStringStartParser *> AC8.double <* crlf
+  pure $ Wait n timeout
 
 pingParser :: Int -> A.Parser Command
 pingParser n = do
@@ -182,7 +192,7 @@ lpopParser n = do
 blpopParser :: Int -> A.Parser Command
 blpopParser n = do
   expectArity [3] n
-  key <- bulkStringParser <* AC8.char '$' <* AC8.decimal <* crlf
+  key <- bulkStringParser <* bulkStringStartParser
   timeout <- AC8.double <* crlf
   pure $ BLPop key timeout
 
@@ -328,7 +338,6 @@ infoParser n = do
            parseClients = void bulkStringStartParser >> AC8.stringCI "clients" >> crlf >> pure (Info Clients)
            parseMemory = void bulkStringStartParser >> AC8.stringCI "memory" >> crlf >> pure (Info Memory)
 
--- *3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n
 replconfParser :: Int  -> A.Parser Command
 replconfParser n = do
   expectArity [3] n

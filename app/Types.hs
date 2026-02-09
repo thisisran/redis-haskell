@@ -93,26 +93,27 @@ data TCPReceivedResult = TCPResultFull !BS.ByteString !BS.ByteString
 
 data Command
   = Ping
-  | Echo BS.ByteString
-  | Set BS.ByteString BS.ByteString (Maybe SetExpiry)
-  | Get BS.ByteString
-  | RPush BS.ByteString [BS.ByteString]
-  | LPush BS.ByteString [BS.ByteString]
-  | LRange BS.ByteString Int Int
-  | LLen BS.ByteString
-  | LPop BS.ByteString Int
-  | BLPop BS.ByteString Double
-  | Type BS.ByteString
-  | XAdd BS.ByteString EntryId [(BS.ByteString, BS.ByteString)]
-  | XRange BS.ByteString RangeEntryId RangeEntryId
+  | Echo !BS.ByteString
+  | Set !BS.ByteString !BS.ByteString (Maybe SetExpiry)
+  | Get !BS.ByteString
+  | RPush !BS.ByteString [BS.ByteString]
+  | LPush !BS.ByteString [BS.ByteString]
+  | LRange !BS.ByteString !Int !Int
+  | LLen !BS.ByteString
+  | LPop !BS.ByteString !Int
+  | BLPop !BS.ByteString !Double
+  | Type !BS.ByteString
+  | XAdd !BS.ByteString !EntryId [(BS.ByteString, BS.ByteString)]
+  | XRange !BS.ByteString !RangeEntryId !RangeEntryId
   | XRead [(BS.ByteString, RangeEntryId)] (Maybe Double)
-  | Incr BS.ByteString
+  | Incr !BS.ByteString
   | Multi
   | Exec
   | Discard
-  | Info InfoRequest
-  | ReplConf ReplConfOptions
-  | Psync PSyncRequest
+  | Info !InfoRequest
+  | ReplConf !ReplConfOptions
+  | Psync !PSyncRequest
+  | Wait !Int !Double
   deriving (Show, Eq)
 
 data EntryId = EntryId !Word64 !Word64
