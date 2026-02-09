@@ -338,10 +338,15 @@ infoParser n = do
            parseClients = void bulkStringStartParser >> AC8.stringCI "clients" >> crlf >> pure (Info Clients)
            parseMemory = void bulkStringStartParser >> AC8.stringCI "memory" >> crlf >> pure (Info Memory)
 
+-- n = 3, *3\r\n
+-- $8\r\nREPLCONF\r\n
+-- $3\r\nACK\r\n
+-- $2\r\n31\r\n
+
 replconfParser :: Int  -> A.Parser Command
 replconfParser n = do
   expectArity [3] n
-  listeningPortParser <|> capabilityParser <|> getackParser
+  listeningPortParser <|> capabilityParser <|> getackCheckParser <|> getackRespParser
   where listeningPortParser = do
           void bulkStringStartParser *> AC8.stringCI "listening-port" <* crlf *> void bulkStringStartParser
           port <- (A.takeWhile1 isDigitW8 <* crlf) <?> "parsing listening port"
@@ -350,10 +355,15 @@ replconfParser n = do
         capabilityParser = do
           void bulkStringStartParser <* AC8.stringCI "capa" <* crlf
           ReplConf . Capa <$> bulkStringParser
-        getackParser = do
+        getackCheckParser = do
           void bulkStringStartParser <* AC8.stringCI "GETACK" <* crlf
           void bulkStringStartParser <* AC8.char '*' <* crlf
           pure $ ReplConf GetAck
+        getackRespParser = do
+          bulkStringStartParser *> void (AC8.stringCI "ACK") <* crlf
+          void bulkStringStartParser
+          offset <- AC8.decimal <* crlf
+          pure $ ReplConf (AckWith offset)
 
 psyncParser :: Int -> A.Parser Command
 psyncParser n = do

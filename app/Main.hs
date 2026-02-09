@@ -5,13 +5,17 @@ module Main (main) where
 import System.Environment (getArgs)
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
 
--- import Control.Concurrent.Async (async)
+import qualified Control.Concurrent.Async as SA
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Control.Monad (when, unless, void)
 
-import UnliftIO (MonadUnliftIO, withRunInIO, async)
+import Control.Monad.State.Strict (gets)
+import Control.Monad.Reader (asks)
+
+import UnliftIO (MonadUnliftIO, withRunInIO)
+import qualified UnliftIO as UL
 
 import Data.Word (Word64)
 import Data.Maybe (fromMaybe, isNothing, isJust)
@@ -43,11 +47,14 @@ updateReplicas command = do
   when update $ do
     replSockets <- getReplicas
     socketList <- liftIO $ readTVarIO replSockets
-    go socketList
-    where go [] = pure ()
-          go (x:xs) = do
-            send x $ encodeArray True command
-            go xs
+    let encodedCommand = encodeArray True command
+    currOffset <- getReplicaSentOffset
+    setReplicaSentOffset (BS8.length encodedCommand + currOffset)
+    go socketList encodedCommand
+    where go [] cmd= pure ()
+          go (x:xs) cmd = do
+            send x cmd
+            go xs cmd
 
 -- TODO: Eventually will need to turn it into a recursive function that will process all the arguments provided, not just 1 key/value pair
 setCommand :: MonadStore m => BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> m Response
@@ -148,41 +155,48 @@ applyLPopHelper key count = do
 lpopCommand :: BS.ByteString -> Int -> ClientApp Response
 lpopCommand = applyLPopHelper
 
+execWithTimeout :: Double -> ClientApp Response -> ClientApp (Bool, Response) -> ClientApp Response
+execWithTimeout timeout timeoutOp otherOp = go 0
+  where
+    go :: Double -> ClientApp Response
+    go elapsed
+      | elapsed > timeout && timeout > 0 = timeoutOp
+      | otherwise = do
+          (shouldContinue, response) <- otherOp
+          if shouldContinue then do
+            liftIO $ threadDelay 1_000
+            go $ elapsed + 0.001
+          else pure response
+
 blpopCommand :: BS.ByteString -> Double -> Int -> ClientApp Response
 blpopCommand key timeout clientID = do
   liftIO $ hPutStrLn stderr ("Starting BLPop with timeout: " <> show timeout)
-  go 0
-  where
-    go elapsed
-      | elapsed > timeout && timeout > 0 = do
-          pure $ Response encodeNullArray emptyResponse
-      | otherwise = do
+  execWithTimeout timeout noTimeOp mainOp
+  where noTimeOp = pure $ Response encodeNullArray emptyResponse
+        mainOp = do
           val <- getDataEntry key
           case val of
             Nothing -> do
               addWaiterOnce key clientID
-              waitAndContinue elapsed
+              pure (True, Response "" (pure ()))
             Just (MemoryStoreEntry (MSListVal []) Nothing) -> do
               addWaiterOnce key clientID
-              waitAndContinue elapsed
+              pure (True, Response "" (pure ()))
             Just (MemoryStoreEntry (MSListVal (x : xs)) Nothing) -> do
               waiters <- getWaiterEntry key
               case waiters of
                 Nothing -> do
                   (Response resp _) <- applyLPopHelper key 1
-                  pure $ Response (encodeArray False [encodeBulkString key, resp]) emptyResponse
+                  pure (False, Response (encodeArray False [encodeBulkString key, resp]) emptyResponse)
                 Just waitersList -> do
                   if IS.member clientID waitersList
                     then do
                       (Response resp _) <- applyLPopHelper key 1
                       delWaiterEntry key
-                      pure $ Response (encodeArray False [encodeBulkString key, resp]) emptyResponse
+                      pure (False, Response (encodeArray False [encodeBulkString key, resp]) emptyResponse)
                     else do
                       addWaiterOnce key clientID
-                      waitAndContinue elapsed
-    waitAndContinue elapsed = do
-      liftIO $ threadDelay 1_000
-      go $ elapsed + 0.001
+                      pure (True, Response "" (pure ()))
 
 typeCommand :: BS.ByteString -> ClientApp Response
 typeCommand key = do
@@ -392,6 +406,17 @@ replConfCommand (ListeningPort port) = do
   pure $ Response (encodeSimpleString "OK") emptyResponse
 replConfCommand (Capa capa) = do
   pure $ Response (encodeSimpleString "OK") emptyResponse
+replConfCommand (AckWith offset) = do
+  serverOffset <- getReplicaSentOffset
+  if offset == serverOffset
+  then do
+    tvComplete <- asks $ completeReplicaCount . cenvShared
+    liftIO . atomically $ do
+      current <- readTVar tvComplete
+      writeTVar tvComplete $ current + 1
+    current <- liftIO $ readTVarIO tvComplete
+    pure $ Response mempty emptyResponse
+  else pure $ Response mempty emptyResponse
 
 sendSnapshot :: ClientApp ()
 sendSnapshot = do
@@ -404,16 +429,64 @@ psyncCommand PSyncUnknown = do
   repl <- getClientReplication
   case repl of
     Master repID _ -> do
-      socket <- getSocket
-      addReplica socket
+      _sock <- getSocket
+      addReplica _sock
       pure $ Response (encodeSimpleString $ "FULLRESYNC " <> BS8.pack repID <> " 0") sendSnapshot
     _ -> pure $ Response mempty emptyResponse -- A slave will never get a PSync command from a client
 
+sendAckCommand :: Socket -> Int -> TVar Int -> IO ()
+sendAckCommand sock serverOffset tvCompleted = do
+  SA.withAsync worker $ \a -> do
+    SA.wait a
+  where
+       worker :: IO ()
+       worker = do
+          -- liftIO $ hPutStrLn stderr "Sending REPLCONF GETACK *"
+          liftIO $ send sock $ encodeArray True ["REPLCONF", "GETACK", "*"]
+
 waitCommand :: Int -> Double -> ClientApp Response
-waitCommand _ _ = do
+waitCommand reqReady timeout = do
   tv <- getReplicas
   replicas <- liftIO $ readTVarIO tv
-  pure $ Response (encodeInteger (length replicas)) emptyResponse
+  serverOffset <- getReplicaSentOffset
+  tvComplete <- asks (completeReplicaCount . cenvShared)
+  liftIO . atomically $ modifyTVar' tvComplete (const 0)
+
+  -- liftIO $ hPutStrLn stderr ("SERVER OFFSET " <> show serverOffset)
+  sendAcknowledgements serverOffset tvComplete replicas
+  currOffset <- getReplicaSentOffset
+  if currOffset > 0
+  then do
+    liftIO $ hPutStrLn stderr "Sent ACK to all clients"
+    execWithTimeout (timeout/1_000) countSoFarOp countFullOp
+  else pure $ Response (encodeInteger $ length replicas) emptyResponse
+
+  where sendAcknowledgements serverOS tvComplete [] = pure ()
+        sendAcknowledgements serverOS tvComplete (x:xs) = do
+          liftIO $ sendAckCommand x serverOS tvComplete
+          sendAcknowledgements serverOS tvComplete xs
+        countSoFarOp :: ClientApp Response
+        countSoFarOp = do
+          result <- getCompleteReplicas
+          -- liftIO $ hPutStrLn stderr ("WAIT Timedout, returning " <> show result)
+          updateServerSent
+          pure $ Response (encodeInteger result) emptyResponse
+        countFullOp :: ClientApp (Bool, Response)
+        countFullOp = do
+          result <- getCompleteReplicas
+          if result >= reqReady
+          then do
+            -- liftIO $ hPutStrLn stderr ("WAIT got enough requests, returning " <> show result)
+            updateServerSent
+            pure (False, Response (encodeInteger result) emptyResponse)
+          else pure (True, Response "" emptyResponse)
+        getCompleteReplicas = do
+          tv <- asks (completeReplicaCount . cenvShared)
+          liftIO $ readTVarIO tv
+        updateServerSent = do
+            let encodedCommand = encodeArray True ["REPLCONF", "GETACK", "*"]
+            currOffset <- getReplicaSentOffset
+            setReplicaSentOffset (BS8.length encodedCommand + currOffset)
 
 handleConnection :: ClientApp ()
 handleConnection = go ""
@@ -460,11 +533,11 @@ handleConnection = go ""
               go rest                -- rest may already contain next command
             RParserErr e -> do
               liftIO $ send sock e
-      
+
 ---------------------------------------------------------------------------------------------------------
 -- Slave functions
 
-recvByParser :: (BS.ByteString -> StringParserResult) -> Socket -> BS.ByteString -> App TCPReceivedResult
+recvByParser :: (BS.ByteString -> StringParserResult) -> Socket -> BS.ByteString -> ReplicaApp TCPReceivedResult
 recvByParser parser sock = go
   where
     go acc = do
@@ -475,24 +548,28 @@ recvByParser parser sock = go
           Just chunk -> go (acc <> chunk)
         SParserError msg           -> pure $ TCPResultError msg
 
-recvSimpleResponse :: Socket -> BS.ByteString -> App TCPReceivedResult
+recvSimpleResponse :: Socket -> BS.ByteString -> ReplicaApp TCPReceivedResult
 recvSimpleResponse = recvByParser parseSimpleString
 
-recvRDBFile :: Socket -> BS.ByteString -> App TCPReceivedResult
+recvRDBFile :: Socket -> BS.ByteString -> ReplicaApp TCPReceivedResult
 recvRDBFile = recvByParser parseRDBFile
 
-getAckCommand :: MonadStore m => Int -> m Response
-getAckCommand offset = pure $ Response (encodeArray True ["REPLCONF", "ACK", (BS8.pack . show) offset]) emptyResponse 
-  
-awaitServerUpdates :: Socket -> BS.ByteString -> App ()
+getAckCommand :: ReplicaApp Response
+getAckCommand = do
+  offset <- getReplicaOffset
+  pure $ Response (encodeArray True ["REPLCONF", "ACK", (BS8.pack . show) offset]) emptyResponse 
+
+awaitServerUpdates :: Socket -> BS.ByteString -> ReplicaApp ()
 awaitServerUpdates sock = go 0
   where
-    go :: Int -> BS.ByteString -> App ()
+    go :: Int -> BS.ByteString -> ReplicaApp ()
     go offset buffered = do
       mb <- if BS.null buffered then liftIO (recv sock 4096) else pure (Just buffered)
       case mb of
         Nothing -> pure ()
-        Just buf -> case parseOneCommand buf of
+        Just buf -> do
+          setReplicaOffset offset
+          case parseOneCommand buf of
             RParsed cmd rest -> do
               let processedCount = BS.length buf - BS.length rest
               case cmd of
@@ -502,7 +579,8 @@ awaitServerUpdates sock = go 0
                 LPop key count          -> void $ applyLPopHelper key count
                 XAdd streamID entryID v -> void $ xaddCommand streamID entryID v
                 Incr key                -> void $ incrCommand key
-                ReplConf GetAck         -> getAckCommand offset >>= \(Response resp _) -> send sock resp
+                ReplConf GetAck         -> do
+                  getAckCommand >>= \(Response resp _) -> send sock resp
                 _                       -> pure ()
               go (offset + processedCount) rest
             RParserNeedMore -> do
@@ -512,16 +590,16 @@ awaitServerUpdates sock = go 0
                 Just more -> go offset (buf <> more)
             RParserErr _ -> pure () -- TODO: proper error reporting/propagaton
 
-runReplica :: App ()
+runReplica :: ReplicaApp ()
 runReplica = do
   clientPort <- getPort
   getReplication >>= \case
     Master _ _ -> pure mempty
-    -- withRunInIO :: ((App () -> IO ()) -> IO) -> App()
+    -- withRunInIO :: ((ReplicaApp () -> IO ()) -> IO) -> ReplicaApp()
     Slave host port -> withRunInIO $ \runInIO -> do
       putStrLn ("Trying to connect to " <> host <> " " <> port)
-      _ <- async $ connect host port $ \(_sock, _addr) ->
-        -- runInIO :: App () -> IO ()
+      _ <- UL.async $ connect host port $ \(_sock, _addr) ->
+        -- runInIO :: ReplicaApp () -> IO ()
         runInIO $ do
           send _sock $ encodeArray True ["PING"]
           respPing <- recvSimpleResponse _sock mempty
@@ -542,6 +620,7 @@ runReplica = do
                               case replResp2 of
                                 "OK" -> do
                                   liftIO $ send _sock $ encodeArray True ["PSYNC", "?", "-1"]
+                                  -- TODOHERE
                                   respPsync <- recvSimpleResponse _sock pending2
                                   case respPsync of
                                     TCPResultFull replPsync pending3 -> do
@@ -582,11 +661,16 @@ main = do
               WantSlave wantHost wantPort -> SharedConfig port (Slave wantHost wantPort)
 
   newReplicas <- newTVarIO []
-  let sharedEnv = SharedEnv store sharedCfg newReplicas
+  sentOffset <- newTVarIO 0
+  complReplicas <- newTVarIO 0
+  let sharedEnv = SharedEnv store sharedCfg newReplicas sentOffset complReplicas
+
+  newReplicaOffset <- newTVarIO 0
+  let replicaEnv = ReplicaEnv sharedEnv newReplicaOffset
 
   case sharedCfg of
-    SharedConfig _ (Master _ _) -> pure ()
-    SharedConfig _ (Slave _ _) -> runApp sharedEnv runReplica
+      SharedConfig _ (Slave _ _) -> runReplicaApp replicaEnv runReplica
+      _ -> pure ()
 
   putStrLn $ "Redis server listening on port " ++ port
   serve HostAny port $ \(socket, address) -> do
@@ -604,3 +688,4 @@ main = do
 
     runClientApp env cs handleConnection
     closeSock socket
+

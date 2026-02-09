@@ -1,6 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedRecordDot #-}
-
 module MemoryStore
   ( getSocket
   , getReplication
@@ -27,9 +24,13 @@ module MemoryStore
   , MonadStore
   , getReplicas
   , addReplica
+  , getReplicaSentOffset
+  , setReplicaSentOffset
+  , getReplicaOffset
+  , setReplicaOffset
   ) where
 
-import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar')
+import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar', modifyTVar)
 
 import Data.Maybe (fromMaybe)
 
@@ -76,6 +77,8 @@ class (Monad m, MonadIO m) => MonadStore m where
   addReplica sock = do
     tv <- getReplicas
     liftIO . atomically $ modifyTVar' tv (\l -> l ++ [sock])
+  getReplicaSentOffset :: m Int
+  setReplicaSentOffset :: Int -> m ()
 
 -------------------------------------------------------------------------------------
 
@@ -83,18 +86,29 @@ class (Monad m, MonadIO m) => MonadStore m where
 getWaiters :: ClientApp (TVar (M.Map BS.ByteString IS.IntSet))
 getWaiters = asks $ (.msBLPopWaiters) . senvStore . cenvShared
 
-instance MonadStore App where
-  getData = asks $ (.msData) . senvStore
-  getPort = asks $ (.cfgPort) . senvConfig
-  getReplication = asks $ (.cfgReplication) . senvConfig
-  getReplicas = asks cenvReplicas
+instance MonadStore ReplicaApp where
+  getData = asks $ (.msData) . senvStore . renvShared
+  getPort = asks $ (.cfgPort) . senvConfig . renvShared
+  getReplication = asks $ (.cfgReplication) . senvConfig . renvShared
+  getReplicas = asks $ senvReplicas . renvShared
+  getReplicaSentOffset = do
+    tv <- asks $ senvReplicaSentOffset . renvShared
+    liftIO $ readTVarIO tv
+  setReplicaSentOffset offset = do
+    tv <- asks $ senvReplicaSentOffset . renvShared
+    liftIO . atomically $ modifyTVar' tv (const offset)
 
 instance MonadStore ClientApp where
   getData = asks $ (.msData) . senvStore . cenvShared
   getPort = asks $ (.cfgPort) . senvConfig . cenvShared
   getReplication = asks $ (.cfgReplication) . senvConfig . cenvShared
-  getReplicas = asks (cenvReplicas . cenvShared)
-    
+  getReplicas = asks (senvReplicas . cenvShared)
+  getReplicaSentOffset = do
+    tv <- asks $ senvReplicaSentOffset . cenvShared
+    liftIO $ readTVarIO tv
+  setReplicaSentOffset offset = do
+    tv <- asks $ senvReplicaSentOffset . cenvShared
+    liftIO . atomically $ modifyTVar' tv (const offset)
 
 delDataEntry :: BS.ByteString -> ClientApp ()
 delDataEntry key = do
@@ -122,6 +136,16 @@ getWaiterEntry :: BS.ByteString -> ClientApp (Maybe IS.IntSet)
 getWaiterEntry key = do
   tv <- getWaiters
   liftIO $ M.lookup key <$> readTVarIO tv
+
+getReplicaOffset :: ReplicaApp Int
+getReplicaOffset = do
+  tv <- asks $ (.renvReplicaOffset)
+  liftIO $ readTVarIO tv
+
+setReplicaOffset :: Int -> ReplicaApp ()
+setReplicaOffset offset = do
+  tv <- asks $ (.renvReplicaOffset)
+  liftIO . atomically $ modifyTVar' tv (const offset)
 
 getRole :: ClientApp ReplicationInfo
 getRole = asks $ (.cfgReplication) . ccfgShared . cenvConfig

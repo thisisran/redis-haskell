@@ -5,6 +5,7 @@ module Types
   ( RParserResult (..)
   , Command (..)
   , StringParserResult (..)
+  , TCPClientAckResult (..)
   , TCPReceivedResult (..)
   , SetExpiry (..)
   , PushCommand (..)
@@ -13,7 +14,7 @@ module Types
   , InfoRequest (..)
   , ReplConfOptions (..)
   , PSyncRequest (..)
-  , App
+  , ReplicaApp
   , ClientApp
   , ExpireDuration (..)
   , ExpireReference (..)
@@ -28,7 +29,7 @@ module Types
   , RedisStreams
   , Stream (..)
   , Streams (..)
-  , runApp
+  , runReplicaApp
   , runClientApp
   , SharedConfig (..)
   , ClientConfig (..)
@@ -37,6 +38,7 @@ module Types
   , ReplicationCmdOption (..)
   , SharedEnv (..)
   , ClientEnv (..)
+  , ReplicaEnv (..)
   ) where
 
 import Data.Void (Void)
@@ -76,12 +78,22 @@ data InfoRequest = FullInfo
 data ReplConfOptions = ListeningPort BS.ByteString
                      | Capa BS.ByteString
                      | GetAck
+                     | AckWith Int
                      deriving (Eq, Show)
 
 data PSyncRequest = PSyncUnknown
                   | PSyncFull BS.ByteString Word64
                   deriving (Eq, Show)
-                  
+
+-- data ClientAckResult = ClientAckFull !Int !BS.ByteString
+--                      | ClientAckPartial
+--                      | ClientAckError !BS.ByteString
+--                      deriving stock (Eq, Show)
+
+data TCPClientAckResult = TCPAckResultFull !Int
+                        | TCPAckResultError !BS.ByteString
+                        deriving stock (Eq, Show)
+
 data StringParserResult = SParserFullString !BS.ByteString !BS.ByteString
                         | SParserPartialString
                         | SParserError !BS.ByteString
@@ -175,15 +187,22 @@ data SharedConfig = SharedConfig
   } deriving stock (Eq, Show)
 
 data SharedEnv = SharedEnv
-  { senvStore  :: !MemoryStore
-  , senvConfig :: !SharedConfig
-  , cenvReplicas :: TVar [Socket]
+  { senvStore             :: !MemoryStore
+  , senvConfig            :: !SharedConfig
+  , senvReplicas          :: TVar [Socket]
+  , senvReplicaSentOffset :: TVar Int -- byte count of commands sent to replicas
+  , completeReplicaCount  :: TVar Int
   }
 
 data ClientConfig = ClientConfig
   { ccfgID     :: !Int
   , ccfgSocket :: !Socket
   , ccfgShared :: !SharedConfig
+  }
+
+data ReplicaEnv = ReplicaEnv
+  { renvShared        :: !SharedEnv
+  , renvReplicaOffset :: TVar Int
   }
 
 data ClientEnv = ClientEnv
@@ -204,8 +223,8 @@ data Response = Response
 emptyResponse :: ClientApp ()
 emptyResponse = pure ()
 
-newtype App a = App { unApp :: ReaderT SharedEnv IO a }
-  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader SharedEnv, MonadUnliftIO)
+newtype ReplicaApp a = App { unReplicaApp :: ReaderT ReplicaEnv IO a }
+  deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader ReplicaEnv, MonadUnliftIO)
 
 newtype ClientApp a = ClientApp { unClientApp :: StateT ClientState (ReaderT ClientEnv IO) a }
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader ClientEnv, MonadState ClientState)
@@ -213,8 +232,8 @@ newtype ClientApp a = ClientApp { unClientApp :: StateT ClientState (ReaderT Cli
 -- newtype App a = App { unApp :: StateT ClientState (ReaderT MemoryStore IO) a}
 --   deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader MemoryStore)
 
-runApp  :: SharedEnv -> App a -> IO a
-runApp env = (`runReaderT` env) . unApp
+runReplicaApp  :: ReplicaEnv -> ReplicaApp a -> IO a
+runReplicaApp env = (`runReaderT` env) . unReplicaApp
 
 runClientApp :: ClientEnv -> ClientState -> ClientApp a -> IO (a, ClientState)
 runClientApp env st = (`runReaderT` env) . (`runStateT` st) . unClientApp

@@ -6,6 +6,7 @@ default-extensions:
   - OverloadedStrings
   - NumericUnderscores
   - LambdaCase
+  - OverloadedRecordDot
 
 dependencies:
   - base >= 4.19 && < 5
