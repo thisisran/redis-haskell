@@ -410,7 +410,10 @@ psyncCommand PSyncUnknown = do
     _ -> pure $ Response mempty emptyResponse -- A slave will never get a PSync command from a client
 
 waitCommand :: Int -> Double -> ClientApp Response
-waitCommand _ _ = pure $ Response (encodeInteger 0) emptyResponse
+waitCommand _ _ = do
+  tv <- getReplicas
+  replicas <- liftIO $ readTVarIO tv
+  pure $ Response (encodeInteger (length replicas)) emptyResponse
 
 handleConnection :: ClientApp ()
 handleConnection = go ""
