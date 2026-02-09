@@ -86,9 +86,23 @@ commandParser = do
     "REPLCONF" -> replconfParser n
     "PSYNC"    -> psyncParser n
     "WAIT"     -> waitParser n
+    "CONFIG"   -> configParser n
     _          -> fail "unsupported command"
 -- ===== command implementations =====
 -- Note: n counts *all* array elements including the command name itself.
+
+configParser :: Int  -> A.Parser Command
+configParser n = do
+  expectArity [3] n
+  parseDir <|> parseFileName
+  where parseDir = do
+          bulkStringStartParser >> AC8.stringCI "GET" >> crlf
+          bulkStringStartParser >> AC8.stringCI "dir" >> crlf
+          pure $ Config ConfigGetDir
+        parseFileName = do
+          bulkStringStartParser >> AC8.stringCI "GET" >> crlf
+          bulkStringStartParser >> AC8.stringCI "dbfilename" >> crlf
+          pure $ Config ConfigGetFileName
 
 -- *3\r\n$4\r\nWAIT\r\n$1\r\n0\r\n$5\r\n60000\r\n
 waitParser :: Int -> A.Parser Command

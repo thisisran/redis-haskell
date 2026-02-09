@@ -16,6 +16,8 @@ configP :: Parser CLIOptions
 configP =
   CLIOptions
     <$> optional (option str (long "port" <> metavar "PORT" <> help "Port to listen on"))
+    <*> optional (option str (long "dir" <> metavar "DIR" <> help "RDB file directory"))
+    <*> optional (option str (long "dbfilename" <> metavar "DBFILENAME" <> help "RDB file name"))
     <*> replicaOfP
 
 replicaOfP :: Parser ReplicationCmdOption

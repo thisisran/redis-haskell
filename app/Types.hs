@@ -7,6 +7,7 @@ module Types
   , StringParserResult (..)
   , TCPClientAckResult (..)
   , TCPReceivedResult (..)
+  , ConfigArgs (..)
   , SetExpiry (..)
   , PushCommand (..)
   , EntryId (..)
@@ -103,6 +104,10 @@ data TCPReceivedResult = TCPResultFull !BS.ByteString !BS.ByteString
                        | TCPResultError !BS.ByteString
                        deriving stock (Eq, Show)
 
+data ConfigArgs = ConfigGetDir
+                | ConfigGetFileName
+                deriving stock (Eq, Show)
+
 data Command
   = Ping
   | Echo !BS.ByteString
@@ -126,6 +131,7 @@ data Command
   | ReplConf !ReplConfOptions
   | Psync !PSyncRequest
   | Wait !Int !Double
+  | Config !ConfigArgs
   deriving (Show, Eq)
 
 data EntryId = EntryId !Word64 !Word64
@@ -174,6 +180,8 @@ data ReplicationCmdOption = WantMaster
 
 data CLIOptions = CLIOptions
   { cliPort        :: !(Maybe String)
+  , cliDir         :: !(Maybe String)
+  , cliFileName    :: !(Maybe String)
   , cliReplication :: !ReplicationCmdOption
   } deriving stock (Eq, Show)
 
@@ -183,6 +191,8 @@ data ReplicationInfo = Master { repID :: !String, repOffset :: !Int }
 
 data SharedConfig = SharedConfig
   { cfgPort        :: !String
+  , cfgDir         :: !String
+  , cfgRDBFileName :: !String
   , cfgReplication :: !ReplicationInfo
   } deriving stock (Eq, Show)
 

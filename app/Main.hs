@@ -488,6 +488,14 @@ waitCommand reqReady timeout = do
             currOffset <- getReplicaSentOffset
             setReplicaSentOffset (BS8.length encodedCommand + currOffset)
 
+configCommand :: ConfigArgs -> ClientApp Response
+configCommand ConfigGetDir = do
+  dir <- asks $ cfgDir . ccfgShared . cenvConfig
+  pure $ Response (encodeArray True ["dir", BS8.pack dir]) emptyResponse
+configCommand ConfigGetFileName = do
+  fileName <- asks $ cfgRDBFileName . ccfgShared . cenvConfig
+  pure $ Response (encodeArray True ["dbfilename", BS8.pack fileName]) emptyResponse
+
 handleConnection :: ClientApp ()
 handleConnection = go ""
   where
@@ -528,6 +536,7 @@ handleConnection = go ""
                                             (ReplConf replOptions) -> replConfCommand replOptions
                                             (Psync req) -> psyncCommand req
                                             (Wait replicaNum timeout) -> waitCommand replicaNum timeout
+                                            (Config opt) -> configCommand opt
               liftIO $ send sock resp
               nextAction
               go rest                -- rest may already contain next command
@@ -654,11 +663,13 @@ main = do
   nextID <- newTVarIO (0 :: Int)
 
   let port = fromMaybe "6379" (cliPort cfgCli)
+  let dir = fromMaybe "/tmp/redis-files" (cliDir cfgCli)
+  let rdbFileName = fromMaybe "dump.rdb" (cliFileName cfgCli)
 
   repID <- U.randomAlphaNum40BS
   let sharedCfg = case cliReplication cfgCli of
-              WantMaster -> SharedConfig port (Master (BS8.unpack repID) 0)
-              WantSlave wantHost wantPort -> SharedConfig port (Slave wantHost wantPort)
+              WantMaster -> SharedConfig port dir rdbFileName (Master (BS8.unpack repID) 0)
+              WantSlave wantHost wantPort -> SharedConfig port dir rdbFileName (Slave wantHost wantPort)
 
   newReplicas <- newTVarIO []
   sentOffset <- newTVarIO 0
@@ -669,7 +680,7 @@ main = do
   let replicaEnv = ReplicaEnv sharedEnv newReplicaOffset
 
   case sharedCfg of
-      SharedConfig _ (Slave _ _) -> runReplicaApp replicaEnv runReplica
+      SharedConfig _ _ _ (Slave _ _) -> runReplicaApp replicaEnv runReplica
       _ -> pure ()
 
   putStrLn $ "Redis server listening on port " ++ port
@@ -688,4 +699,3 @@ main = do
 
     runClientApp env cs handleConnection
     closeSock socket
-
