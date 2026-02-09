@@ -473,19 +473,20 @@ recvSimpleResponse = recvByParser parseSimpleString
 recvRDBFile :: Socket -> BS.ByteString -> App TCPReceivedResult
 recvRDBFile = recvByParser parseRDBFile
 
-getAckCommand :: MonadStore m => m Response
-getAckCommand = pure $ Response (encodeArray True ["REPLCONF", "ACK", "0"]) emptyResponse 
+getAckCommand :: MonadStore m => Int -> m Response
+getAckCommand offset = pure $ Response (encodeArray True ["REPLCONF", "ACK", (BS8.pack . show) offset]) emptyResponse 
   
 awaitServerUpdates :: Socket -> BS.ByteString -> App ()
-awaitServerUpdates sock = go
+awaitServerUpdates sock = go 0
   where
-    go :: BS.ByteString -> App ()
-    go buffered = do
+    go :: Int -> BS.ByteString -> App ()
+    go offset buffered = do
       mb <- if BS.null buffered then liftIO (recv sock 4096) else pure (Just buffered)
       case mb of
         Nothing -> pure ()
         Just buf -> case parseOneCommand buf of
             RParsed cmd rest -> do
+              let processedCount = BS.length buf - BS.length rest
               case cmd of
                 Set key val args        -> void $ setCommand key val args
                 RPush key values        -> void $ pushCommand key values RightPushCmd
@@ -493,14 +494,14 @@ awaitServerUpdates sock = go
                 LPop key count          -> void $ applyLPopHelper key count
                 XAdd streamID entryID v -> void $ xaddCommand streamID entryID v
                 Incr key                -> void $ incrCommand key
-                ReplConf GetAck         -> getAckCommand >>= \(Response resp _) -> send sock resp
+                ReplConf GetAck         -> getAckCommand offset >>= \(Response resp _) -> send sock resp
                 _                       -> pure ()
-              go rest
+              go (offset + processedCount) rest
             RParserNeedMore -> do
               mbMore <- liftIO $ recv sock 4096
               case mbMore of
                 Nothing   -> pure () -- TODO: proper error reporting/propagaton, Server closed the connection for some reason
-                Just more -> go (buf <> more)
+                Just more -> go offset (buf <> more)
             RParserErr _ -> pure () -- TODO: proper error reporting/propagaton
 
 runReplica :: App ()
