@@ -473,6 +473,9 @@ recvSimpleResponse = recvByParser parseSimpleString
 recvRDBFile :: Socket -> BS.ByteString -> App TCPReceivedResult
 recvRDBFile = recvByParser parseRDBFile
 
+getAckCommand :: MonadStore m => m Response
+getAckCommand = pure $ Response (encodeArray True ["REPLCONF", "ACK", "0"]) emptyResponse 
+  
 awaitServerUpdates :: Socket -> BS.ByteString -> App ()
 awaitServerUpdates sock = go
   where
@@ -481,8 +484,7 @@ awaitServerUpdates sock = go
       mb <- if BS.null buffered then liftIO (recv sock 4096) else pure (Just buffered)
       case mb of
         Nothing -> pure ()
-        Just buf ->
-          case parseOneCommand buf of
+        Just buf -> case parseOneCommand buf of
             RParsed cmd rest -> do
               case cmd of
                 Set key val args        -> void $ setCommand key val args
@@ -491,6 +493,7 @@ awaitServerUpdates sock = go
                 LPop key count          -> void $ applyLPopHelper key count
                 XAdd streamID entryID v -> void $ xaddCommand streamID entryID v
                 Incr key                -> void $ incrCommand key
+                ReplConf GetAck         -> getAckCommand >>= \(Response resp _) -> send sock resp
                 _                       -> pure ()
               go rest
             RParserNeedMore -> do

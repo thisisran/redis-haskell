@@ -278,7 +278,7 @@ xrangeParser n = do
 
 blockKeywordParser :: A.Parser (Maybe Double)
 blockKeywordParser = do
-   (void bulkStringStartParser >> (A.string "block" >> crlf >> void bulkStringStartParser >> (Just <$> AC8.double) <* crlf)) <|> pure Nothing
+   (void bulkStringStartParser >> (AC8.stringCI "block" >> crlf >> void bulkStringStartParser >> (Just <$> AC8.double) <* crlf)) <|> pure Nothing
 
 countStartRange :: Int -> A.Parser [RangeEntryId]
 countStartRange k
@@ -290,7 +290,7 @@ xreadParser n = do
   expectMinArity 4 n
   timeout <- blockKeywordParser
   let count = if isNothing timeout then 2 else 4
-  void bulkStringStartParser *> A.string "streams" <* crlf
+  void bulkStringStartParser *> AC8.stringCI "streams" <* crlf
   keys <- countBulkStringParser $ (n - count) `div` 2
   ids <- countStartRange $ (n - count) `div` 2
   pure (XRead (zip keys ids) timeout)
@@ -323,23 +323,28 @@ infoParser n = do
   else do
         parseReplication <|> parseServer <|> parseClients <|> parseMemory
         where
-           parseReplication = void bulkStringStartParser >> A.string "replication" >> crlf >> pure (Info Replication)
-           parseServer = void bulkStringStartParser >> A.string "server" >> crlf >> pure (Info Server)
-           parseClients = void bulkStringStartParser >> A.string "clients" >> crlf >> pure (Info Clients)
-           parseMemory = void bulkStringStartParser >> A.string "memory" >> crlf >> pure (Info Memory)
+           parseReplication = void bulkStringStartParser >> AC8.stringCI "replication" >> crlf >> pure (Info Replication)
+           parseServer = void bulkStringStartParser >> AC8.stringCI "server" >> crlf >> pure (Info Server)
+           parseClients = void bulkStringStartParser >> AC8.stringCI "clients" >> crlf >> pure (Info Clients)
+           parseMemory = void bulkStringStartParser >> AC8.stringCI "memory" >> crlf >> pure (Info Memory)
 
+-- *3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n
 replconfParser :: Int  -> A.Parser Command
 replconfParser n = do
   expectArity [3] n
-  listeningPortParser <|> capabilityParser
+  listeningPortParser <|> capabilityParser <|> getackParser
   where listeningPortParser = do
-          void bulkStringStartParser *> A.string "listening-port" <* crlf *> void bulkStringStartParser
+          void bulkStringStartParser *> AC8.stringCI "listening-port" <* crlf *> void bulkStringStartParser
           port <- (A.takeWhile1 isDigitW8 <* crlf) <?> "parsing listening port"
           pure $ ReplConf (ListeningPort port)
         isDigitW8 w = w >= 48 && w <= 57
         capabilityParser = do
-          void bulkStringStartParser <* A.string "capa" <* crlf
+          void bulkStringStartParser <* AC8.stringCI "capa" <* crlf
           ReplConf . Capa <$> bulkStringParser
+        getackParser = do
+          void bulkStringStartParser <* AC8.stringCI "GETACK" <* crlf
+          void bulkStringStartParser <* AC8.char '*' <* crlf
+          pure $ ReplConf GetAck
 
 psyncParser :: Int -> A.Parser Command
 psyncParser n = do

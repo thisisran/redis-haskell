@@ -75,6 +75,7 @@ data InfoRequest = FullInfo
 
 data ReplConfOptions = ListeningPort BS.ByteString
                      | Capa BS.ByteString
+                     | GetAck
                      deriving (Eq, Show)
 
 data PSyncRequest = PSyncUnknown
