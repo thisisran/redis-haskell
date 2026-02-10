@@ -98,6 +98,9 @@ addChannelSubcriber :: BS.ByteString -> Socket -> ClientApp ()
 addChannelSubcriber channel sub = do
   tv <- asks $ senvChannels . cenvShared
   liftIO . atomically $ modifyTVar' tv (HM.alter (Just . (sub :) . fromMaybe []) channel)
+  where exists sub = foldl' (\_ curr -> curr == sub) False
+        addSub sub currList = let addSub = not $ exists sub currList
+                              in if addSub then (sub :) else id
 
 -- TODO: at some point, improve efficiency, don't use a list of sockets, use a set. a set does not have an Ord, so will need to store file descriptors, and socket <-> descriptor
 removeChannelSubscriber :: BS.ByteString -> Socket -> ClientApp ()
