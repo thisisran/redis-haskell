@@ -538,7 +538,48 @@ subscribeCommand channel = do
   currChannels <- getSubChannels
   addChannelSubcriber channel socket
   pure $ Response (encodeArray False [encodeBulkString "subscribe", encodeBulkString channel, encodeInteger $ length currChannels]) emptyResponse
-  
+
+approvedSubCommand :: Command -> Bool
+approvedSubCommand cmd = case cmd of
+                           (Subscribe channel) -> True
+                           Ping                -> True
+                           _                   -> False
+
+execSubCommand :: Command -> ClientApp ()
+execSubCommand cmd = do
+  socket <- getSocket
+  case cmd of
+    (Subscribe channel) -> do
+      (Response resp _) <- subscribeCommand channel
+      send socket resp
+    Ping                -> send socket $ encodeArray False [encodeBulkString "PING", encodeNullBulkString]
+
+getCommandName :: Command -> BS.ByteString
+getCommandName cmd = case cmd of
+                       (Echo _) -> "Echo"
+                       (Set _ _ _) -> "Set"
+                       (Get _) -> "Get"
+                       (RPush _ _) -> "RPush"
+                       (LPush _ _) -> "LPush"
+                       (LRange _ _ _) -> "LRange"
+                       (LLen _) -> "LLen"
+                       (LPop _ _) -> "LPop"
+                       (BLPop _ _) -> "BLPop"
+                       (Type _) -> "Type"
+                       (XAdd _ _ _) -> "XAdd"
+                       (XRange _ _ _) -> "XRange"
+                       (XRead _ _) -> "XRead"
+                       (Incr _) -> "Incr"
+                       Multi -> "Multi"
+                       Exec -> "Exec"
+                       Discard -> "Discard"
+                       (Info _) -> "Info"
+                       (ReplConf _) -> "ReplConf"
+                       (Psync _) -> "Psync"
+                       (Wait _ timeout) -> "Wait"
+                       (Config _) -> "Config"
+                       (Keys _) -> "Keys"
+                       
 
 handleConnection :: ClientApp ()
 handleConnection = go ""
@@ -555,7 +596,15 @@ handleConnection = go ""
             RParserNeedMore -> go (acc <> buf)
             -- keep partial bytes for next recv
             RParsed cmd rest -> do
-              Response resp nextAction <- case cmd of
+              subMode <- getSubscribed
+              if subMode then
+                 if approvedSubCommand cmd
+                 then execSubCommand cmd
+                 else do
+                   let commandName = getCommandName cmd
+                   liftIO $ send sock $ encodeSimpleError ("Can't execute '" <> commandName <> "' when one or more subscriptions exist")
+              else do
+                Response resp nextAction <- case cmd of
                                             Ping -> handleMultiCmd $ pure $ Response (encodeSimpleString "PONG") emptyResponse
                                             (Echo str) -> handleMultiCmd $ pure $ Response (encodeBulkString str) emptyResponse
                                             (Set key val args) -> handleMultiCmd $ setCommand key val args
@@ -583,8 +632,8 @@ handleConnection = go ""
                                             (Config opt) -> configCommand opt
                                             (Keys filter) -> keysCommand filter
                                             (Subscribe channel) -> subscribeCommand channel
-              liftIO $ send sock resp
-              nextAction
+                liftIO $ send sock resp
+                nextAction
               go rest                -- rest may already contain next command
             RParserErr e -> do
               liftIO $ send sock e
