@@ -82,7 +82,6 @@ class (Monad m, MonadIO m) => MonadStore m where
 
 -------------------------------------------------------------------------------------
 
-
 getWaiters :: ClientApp (TVar (M.Map BS.ByteString IS.IntSet))
 getWaiters = asks $ (.msBLPopWaiters) . senvStore . cenvShared
 

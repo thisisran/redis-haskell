@@ -11,10 +11,13 @@ module Utilities
   , randomAlphaNum40BS
   , decodeRdbBase64
   , emptyRdbFile
+  , applySet
   ) where
 
 import System.Random.Stateful (uniformRM, globalStdGen)
 
+import Control.Monad.IO.Class (liftIO)
+                              
 import Control.Monad (replicateM, guard)
 import Data.Char (toLower)
 -- import Text.Megaparsec (errorBundlePretty,  ParseErrorBundle)
@@ -32,7 +35,8 @@ import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Base64.URL as B64URL
 import qualified Data.ByteString.Lazy as BSL
 
-import Types (EntryId (..))
+import Types (EntryId (..), SetExpiry (..), MemoryStoreEntry (..), ExpireDuration (..),  ExpireReference (..), MemoryStoreValue (..))
+import MemoryStore (MonadStore, setDataEntry)
 
 import Data.Time.Clock.POSIX (getPOSIXTime)
 
@@ -111,3 +115,12 @@ decodeRdbBase64 input =
 
 emptyRdbFile :: BS.ByteString
 emptyRdbFile = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog=="
+
+applySet :: MonadStore m => BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> m ()
+applySet key val ex = do
+  now <- liftIO nowNs
+  setDataEntry key $ handleExpiry ex now
+  where
+    handleExpiry Nothing timeRef = MemoryStoreEntry (MSStringVal val) Nothing
+    handleExpiry (Just (EX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral $ ex * 1_000_000), ExpireReference timeRef)
+    handleExpiry (Just (PX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral ex), ExpireReference timeRef)

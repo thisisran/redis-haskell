@@ -2,10 +2,13 @@
 
 module Main (main) where
 
+import System.FilePath ((</>))
 import System.Environment (getArgs)
-import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout)
+import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout, withBinaryFile, IOMode(ReadMode), Handle, SeekMode(RelativeSeek), hSeek)
 
 import qualified Control.Concurrent.Async as SA
+-- import Control.Exception (IOException)
+import qualified Control.Exception as CE
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
 import Control.Monad.IO.Class (liftIO, MonadIO)
@@ -17,6 +20,9 @@ import Control.Monad.Reader (asks)
 import UnliftIO (MonadUnliftIO, withRunInIO)
 import qualified UnliftIO as UL
 
+import RDBParser
+
+import Data.List (foldl')
 import Data.Word (Word64)
 import Data.Maybe (fromMaybe, isNothing, isJust)
 import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve, connect)
@@ -59,18 +65,12 @@ updateReplicas command = do
 -- TODO: Eventually will need to turn it into a recursive function that will process all the arguments provided, not just 1 key/value pair
 setCommand :: MonadStore m => BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> m Response
 setCommand key val ex = do
-  now <- liftIO U.nowNs
-  setDataEntry key $ handleExpiry ex now
-  
+  U.applySet key val ex
   let exCommand = case ex of
                    Nothing -> []
                    Just (EX n) -> ["ex", (BS8.pack . show) n]
                    Just (PX n) -> ["px", (BS8.pack . show) n]
   pure $ Response (encodeSimpleString "OK") (updateReplicas $ ["SET", key, val] ++ exCommand)
-  where
-    handleExpiry Nothing timeRef = MemoryStoreEntry (MSStringVal val) Nothing
-    handleExpiry (Just (EX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral $ ex * 1_000_000), ExpireReference timeRef)
-    handleExpiry (Just (PX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral ex), ExpireReference timeRef)
 
 getCommand :: BS.ByteString -> ClientApp Response
 getCommand key = do
@@ -496,6 +496,34 @@ configCommand ConfigGetFileName = do
   fileName <- asks $ cfgRDBFileName . ccfgShared . cenvConfig
   pure $ Response (encodeArray True ["dbfilename", BS8.pack fileName]) emptyResponse
 
+-- TODO: Filtering is VERY inefficient, redo at some point
+keysCommand :: BS.ByteString -> ClientApp Response
+keysCommand "*" = do
+  tvStore <- getData
+  store <- liftIO $ readTVarIO tvStore
+  let result = M.keys store
+  pure $ Response (encodeArray True result) emptyResponse
+keysCommand filter = do
+  tvStore <- getData
+  store <- liftIO $ readTVarIO tvStore
+  let result = M.keys store
+  pure $ Response (encodeArray True (foldl' foldme [] result)) emptyResponse
+  where
+    foldme :: [BS.ByteString] -> BS.ByteString -> [BS.ByteString]
+    foldme acc item = if go (BS8.unpack filter) (BS8.unpack item)
+                      then acc ++ [BS8.pack (BS8.unpack item)]
+                      else acc
+    go :: String -> String -> Bool
+    go [] [] = True
+    go [] _ = False
+    go ('*':_) [] = True
+    go (x:_) [] = False
+    go (x:xs) (y:ys)
+      | x == '*' = True
+      | x /= y = False
+      | otherwise = go xs ys
+  
+
 handleConnection :: ClientApp ()
 handleConnection = go ""
   where
@@ -537,6 +565,7 @@ handleConnection = go ""
                                             (Psync req) -> psyncCommand req
                                             (Wait replicaNum timeout) -> waitCommand replicaNum timeout
                                             (Config opt) -> configCommand opt
+                                            (Keys filter) -> keysCommand filter
               liftIO $ send sock resp
               nextAction
               go rest                -- rest may already contain next command
@@ -666,6 +695,9 @@ main = do
   let dir = fromMaybe "/tmp/redis-files" (cliDir cfgCli)
   let rdbFileName = fromMaybe "dump.rdb" (cliFileName cfgCli)
 
+  CE.try (withBinaryFile (dir </> rdbFileName) ReadMode (readDBFile store))
+      :: IO (Either CE.IOException ())
+
   repID <- U.randomAlphaNum40BS
   let sharedCfg = case cliReplication cfgCli of
               WantMaster -> SharedConfig port dir rdbFileName (Master (BS8.unpack repID) 0)
@@ -699,3 +731,10 @@ main = do
 
     runClientApp env cs handleConnection
     closeSock socket
+
+  where readDBFile store h = do
+          magicWord <- BS.hGet h 5
+          redisVersion <- BS.hGet h 4
+          -- print $ "Header section: " <> magicWord <> " " <> redisVersion
+          consumeMetadata h
+          consumeDB h (msData store)

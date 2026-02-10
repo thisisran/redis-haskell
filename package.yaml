@@ -14,6 +14,7 @@ dependencies:
   - bytestring # useful to send bytes over the network
   - network # required when using bytestring
   - text # use Text rather than String
+  - filepath
   - stm # may help with a concurrent database
   - containers # may help with the database structure and debugging
   - unordered-containers

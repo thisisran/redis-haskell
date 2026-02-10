@@ -87,9 +87,15 @@ commandParser = do
     "PSYNC"    -> psyncParser n
     "WAIT"     -> waitParser n
     "CONFIG"   -> configParser n
+    "KEYS"     -> keysParser n
     _          -> fail "unsupported command"
 -- ===== command implementations =====
 -- Note: n counts *all* array elements including the command name itself.
+
+keysParser :: Int -> A.Parser Command
+keysParser n = do
+  expectArity [2] n
+  Keys <$> bulkStringParser
 
 configParser :: Int  -> A.Parser Command
 configParser n = do

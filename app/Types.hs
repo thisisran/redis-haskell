@@ -40,6 +40,7 @@ module Types
   , SharedEnv (..)
   , ClientEnv (..)
   , ReplicaEnv (..)
+  , LengthEncoding (..)
   ) where
 
 import Data.Void (Void)
@@ -62,6 +63,10 @@ data RParserResult = RParsed !Command !BS.ByteString
                    | RParserNeedMore
                    | RParserErr !BS.ByteString
                    deriving stock (Show)
+
+data LengthEncoding = SimpleString !Int
+                    | ComplexString !Int
+                    deriving (Eq, Show)
 
 data SetExpiry = EX Int | PX Int
   deriving (Show, Eq)
@@ -132,6 +137,7 @@ data Command
   | Psync !PSyncRequest
   | Wait !Int !Double
   | Config !ConfigArgs
+  | Keys !BS.ByteString
   deriving (Show, Eq)
 
 data EntryId = EntryId !Word64 !Word64
