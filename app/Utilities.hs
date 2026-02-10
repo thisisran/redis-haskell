@@ -11,7 +11,6 @@ module Utilities
   , randomAlphaNum40BS
   , decodeRdbBase64
   , emptyRdbFile
-  , applySet
   ) where
 
 import System.Random.Stateful (uniformRM, globalStdGen)
@@ -63,6 +62,8 @@ nowNs = fmap (floor . (* 1000)) getPOSIXTime
 
 hasElapsedSince :: Integer -> Integer -> IO Bool
 hasElapsedSince thresholdMs startNs = do
+  print $ "Start timestamp: " <> show startNs
+  print $ "threshold: " <> show thresholdMs
   endNs <- nowNs
   pure (endNs - startNs >= thresholdMs)
 
@@ -114,13 +115,4 @@ decodeRdbBase64 input =
            _ -> bs
 
 emptyRdbFile :: BS.ByteString
-emptyRdbFile = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog=="
-
-applySet :: MonadStore m => BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> m ()
-applySet key val ex = do
-  now <- liftIO nowNs
-  setDataEntry key $ handleExpiry ex now
-  where
-    handleExpiry Nothing timeRef = MemoryStoreEntry (MSStringVal val) Nothing
-    handleExpiry (Just (EX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral $ ex * 1_000_000), ExpireReference timeRef)
-    handleExpiry (Just (PX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral ex), ExpireReference timeRef)
+emptyRdbFile = "UkVESVMwMDEx+glyZWRpcy12ZXIFNy4yLjD6CnJlZGlzLWJpdHPAQPoFY3RpbWXCbQi8ZfoIdXNlZC1tZW3CsMQQAPoIYW9mLWJhc2XAAP/wbjv+wP9aog==" 

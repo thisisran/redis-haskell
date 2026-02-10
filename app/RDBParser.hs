@@ -5,6 +5,8 @@ module RDBParser
   , consumeDB
   ) where
 
+import Data.Time.Clock.POSIX (getPOSIXTime)
+
 import System.IO (withBinaryFile, IOMode(ReadMode), Handle, SeekMode(RelativeSeek), hSeek)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -25,21 +27,21 @@ twoBytesToInt hi lo =
 
 fourBytesToInt :: Word8 -> Word8 -> Word8 -> Word8 -> Int
 fourBytesToInt hi1 hi2 lo1 lo2 =
-  fromIntegral ((fromIntegral hi1 :: Word32) `shiftL` 32 .|.
-                (fromIntegral hi2 `shiftL` 24) .|.
-                (fromIntegral lo1 `shiftL` 16) .|.
+  fromIntegral ((fromIntegral hi1 :: Word32) `shiftL` 24 .|.
+                (fromIntegral hi2 `shiftL` 16) .|.
+                (fromIntegral lo1 `shiftL` 8) .|.
                 fromIntegral lo2)
 
 eightBytesToInt :: Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Int
 eightBytesToInt w1 w2 w3 w4 w5 w6 w7 w8 =
-  fromIntegral ((fromIntegral w1 :: Word64) `shiftL` 64 .|.
-               (fromIntegral w2 `shiftL` 56) .|.
-               (fromIntegral w3 `shiftL` 48) .|.
-               (fromIntegral w4 `shiftL` 40) .|.
-               (fromIntegral w5 `shiftL` 32) .|.
-               (fromIntegral w6 `shiftL` 24) .|.
-               (fromIntegral w7 `shiftL` 16) .|.
-               fromIntegral w8)
+  (fromIntegral w1 `shiftL` 56) .|.
+  (fromIntegral w2 `shiftL` 48) .|.
+  (fromIntegral w3 `shiftL` 40) .|.
+  (fromIntegral w4 `shiftL` 32) .|.
+  (fromIntegral w5 `shiftL` 24) .|.
+  (fromIntegral w6 `shiftL` 16) .|.
+  (fromIntegral w7 `shiftL`  8) .|.
+   fromIntegral w8
 
 -- not for Integer strings, or compressed strings
 lengthEncoding :: Handle -> IO LengthEncoding
@@ -149,13 +151,16 @@ consumeHashTable h store = do
     processExpiredKey count = do
       fByte <- BS.hGet h 1
       expiry <- if BS.head fByte == 252
-                   then processMilliKey
-                   else if BS.head fByte == 253 then processSecondsKey else pure 0 -- expiry is in milliseconds, on error just return 0 as expiry
+                then processMilliKey
+                else if BS.head fByte == 253 then processSecondsKey else pure 0 -- expiry is in milliseconds, on error just return 0 as expiry
       vType <- BS.hGet h 1
       when (BS.head vType == 0) $ do -- currently only supporting string values
         (readKey, readValue) <- processKeyValue
         now <- U.nowNs
-        let formattedValue = MemoryStoreEntry (MSStringVal readValue) (Just (ExpireDuration (fromIntegral expiry), ExpireReference now))
+        print $ "Now: " <> show now
+        let dur = max 0 (expiry - fromIntegral now)
+        print $ "Expiry: " <> show expiry
+        let formattedValue = MemoryStoreEntry (MSStringVal readValue) (Just (ExpireDuration (fromIntegral dur), ExpireReference now))
         atomically $ modifyTVar' store (M.insert readKey formattedValue)
         -- print $ "Key: " <> readKey <> ", Value: " <> readValue <> ", Expiry: " <> (BS8.pack . show) expiry
       processExpiredKey $ count - 1
@@ -164,7 +169,7 @@ consumeHashTable h store = do
       num2c <- BS.hGet h 1
       num3c <- BS.hGet h 1
       num4c <- BS.hGet h 1
-      pure $ fourBytesToInt (BS.head num4c) (BS.head num3c) (BS.head num2c) (BS.head num1c)
+      pure $ fourBytesToInt (BS.head num4c) (BS.head num3c) (BS.head num2c) (BS.head num1c) * 1_000
     processMilliKey = do
       num1c <- BS.hGet h 1
       num2c <- BS.hGet h 1

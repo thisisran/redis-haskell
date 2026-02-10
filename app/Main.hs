@@ -65,12 +65,18 @@ updateReplicas command = do
 -- TODO: Eventually will need to turn it into a recursive function that will process all the arguments provided, not just 1 key/value pair
 setCommand :: MonadStore m => BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> m Response
 setCommand key val ex = do
-  U.applySet key val ex
+  now <- liftIO U.nowNs
+  setDataEntry key $ handleExpiry ex now
+
   let exCommand = case ex of
                    Nothing -> []
                    Just (EX n) -> ["ex", (BS8.pack . show) n]
                    Just (PX n) -> ["px", (BS8.pack . show) n]
   pure $ Response (encodeSimpleString "OK") (updateReplicas $ ["SET", key, val] ++ exCommand)
+  where
+    handleExpiry Nothing timeRef = MemoryStoreEntry (MSStringVal val) Nothing
+    handleExpiry (Just (EX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral $ ex * 1_000_000), ExpireReference timeRef) -- TODO: shouldn't it be multiplied by a 1000??
+    handleExpiry (Just (PX ex)) timeRef = MemoryStoreEntry (MSStringVal val) $ Just (ExpireDuration (fromIntegral ex), ExpireReference timeRef)
 
 getCommand :: BS.ByteString -> ClientApp Response
 getCommand key = do
