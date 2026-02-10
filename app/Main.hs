@@ -552,7 +552,7 @@ execSubCommand cmd = do
     (Subscribe channel) -> do
       (Response resp _) <- subscribeCommand channel
       send socket resp
-    Ping                -> send socket $ encodeArray False [encodeBulkString "PING", encodeNullBulkString]
+    Ping                -> send socket $ encodeArray True ["pong", ""]
 
 getCommandName :: Command -> BS.ByteString
 getCommandName cmd = case cmd of
