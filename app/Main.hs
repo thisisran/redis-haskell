@@ -29,6 +29,7 @@ import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, se
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
+import qualified Data.Set as S
 import qualified Data.HashMap.Strict as HM
 import qualified Data.IntSet as IS
 import qualified Data.Map.Strict as M
@@ -416,7 +417,7 @@ replConfCommand (AckWith offset) = do
   serverOffset <- getReplicaSentOffset
   if offset == serverOffset
   then do
-    tvComplete <- asks $ completeReplicaCount . cenvShared
+    tvComplete <- asks $ senvCompleteReplicaCount . cenvShared
     liftIO . atomically $ do
       current <- readTVar tvComplete
       writeTVar tvComplete $ current + 1
@@ -455,7 +456,7 @@ waitCommand reqReady timeout = do
   tv <- getReplicas
   replicas <- liftIO $ readTVarIO tv
   serverOffset <- getReplicaSentOffset
-  tvComplete <- asks (completeReplicaCount . cenvShared)
+  tvComplete <- asks (senvCompleteReplicaCount . cenvShared)
   liftIO . atomically $ modifyTVar' tvComplete (const 0)
 
   -- liftIO $ hPutStrLn stderr ("SERVER OFFSET " <> show serverOffset)
@@ -487,7 +488,7 @@ waitCommand reqReady timeout = do
             pure (False, Response (encodeInteger result) emptyResponse)
           else pure (True, Response "" emptyResponse)
         getCompleteReplicas = do
-          tv <- asks (completeReplicaCount . cenvShared)
+          tv <- asks (senvCompleteReplicaCount . cenvShared)
           liftIO $ readTVarIO tv
         updateServerSent = do
             let encodedCommand = encodeArray True ["REPLCONF", "GETACK", "*"]
@@ -528,6 +529,15 @@ keysCommand filter = do
       | x == '*' = True
       | x /= y = False
       | otherwise = go xs ys
+
+subscribeCommand :: BS.ByteString -> ClientApp Response
+subscribeCommand channel = do
+  socket <- getSocket
+  setSubscribed True
+  addSubChannel channel
+  currChannels <- getSubChannels
+  addChannelSubcriber channel socket
+  pure $ Response (encodeArray False [encodeBulkString "subscribe", encodeBulkString channel, encodeInteger $ length currChannels]) emptyResponse
   
 
 handleConnection :: ClientApp ()
@@ -572,6 +582,7 @@ handleConnection = go ""
                                             (Wait replicaNum timeout) -> waitCommand replicaNum timeout
                                             (Config opt) -> configCommand opt
                                             (Keys filter) -> keysCommand filter
+                                            (Subscribe channel) -> subscribeCommand channel
               liftIO $ send sock resp
               nextAction
               go rest                -- rest may already contain next command
@@ -712,7 +723,8 @@ main = do
   newReplicas <- newTVarIO []
   sentOffset <- newTVarIO 0
   complReplicas <- newTVarIO 0
-  let sharedEnv = SharedEnv store sharedCfg newReplicas sentOffset complReplicas
+  newChannels <- newTVarIO HM.empty
+  let sharedEnv = SharedEnv store sharedCfg newReplicas sentOffset complReplicas newChannels
 
   newReplicaOffset <- newTVarIO 0
   let replicaEnv = ReplicaEnv sharedEnv newReplicaOffset
@@ -730,7 +742,7 @@ main = do
       writeTVar nextID (i + 1)
       pure i
 
-    let cs = ClientState {multi = False, multiList = [] }
+    let cs = ClientState {multi = False, multiList = [], subscribeMode = False, subscribeChannels = S.empty }
 
     let clientCfg = ClientConfig clientID socket sharedCfg
     let env = ClientEnv sharedEnv clientCfg

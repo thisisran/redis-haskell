@@ -88,9 +88,15 @@ commandParser = do
     "WAIT"     -> waitParser n
     "CONFIG"   -> configParser n
     "KEYS"     -> keysParser n
+    "SUBSCRIBE" -> subscribeParser n
     _          -> fail "unsupported command"
 -- ===== command implementations =====
 -- Note: n counts *all* array elements including the command name itself.
+
+subscribeParser :: Int -> A.Parser Command
+subscribeParser n = do
+  expectArity [2] n
+  Subscribe <$> bulkStringParser
 
 keysParser :: Int -> A.Parser Command
 keysParser n = do

@@ -53,6 +53,8 @@ import Control.Monad.Reader
 import Control.Monad.State.Strict
 
 import qualified Data.ByteString as BS
+import qualified Data.HashSet as HS
+import qualified Data.Set as S
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as M
 import qualified Data.IntSet as IS
@@ -138,6 +140,7 @@ data Command
   | Wait !Int !Double
   | Config !ConfigArgs
   | Keys !BS.ByteString
+  | Subscribe !BS.ByteString
   deriving (Show, Eq)
 
 data EntryId = EntryId !Word64 !Word64
@@ -203,11 +206,12 @@ data SharedConfig = SharedConfig
   } deriving stock (Eq, Show)
 
 data SharedEnv = SharedEnv
-  { senvStore             :: !MemoryStore
-  , senvConfig            :: !SharedConfig
-  , senvReplicas          :: TVar [Socket]
-  , senvReplicaSentOffset :: TVar Int -- byte count of commands sent to replicas
-  , completeReplicaCount  :: TVar Int
+  { senvStore                :: !MemoryStore
+  , senvConfig               :: !SharedConfig
+  , senvReplicas             :: TVar [Socket]
+  , senvReplicaSentOffset    :: TVar Int -- byte count of commands sent to replicas
+  , senvCompleteReplicaCount :: TVar Int
+  , senvChannels             :: TVar (HM.HashMap BS.ByteString [Socket])
   }
 
 data ClientConfig = ClientConfig
@@ -229,6 +233,8 @@ data ClientEnv = ClientEnv
 data ClientState = ClientState
   { multi :: !Bool
   , multiList :: [ClientApp Response]
+  , subscribeMode :: !Bool
+  , subscribeChannels :: !(S.Set BS.ByteString)
   }
 
 data Response = Response

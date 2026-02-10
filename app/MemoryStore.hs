@@ -28,14 +28,25 @@ module MemoryStore
   , setReplicaSentOffset
   , getReplicaOffset
   , setReplicaOffset
+  , addChannelSubcriber
+  , removeChannelSubscriber
+  , getSubscribed
+  , setSubscribed
+  , removeSubChannel
+  , getSubChannels
+  , addSubChannel
   ) where
 
 import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar', modifyTVar)
 
 import Data.Maybe (fromMaybe)
 
+import Data.List (foldl')
+
 import Types
 
+import qualified Data.HashSet as HS
+import qualified Data.Set as S
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as M
 import qualified Data.IntSet as IS
@@ -61,6 +72,7 @@ class (Monad m, MonadIO m) => MonadStore m where
   getStream streamID filter = do
     s@(Streams streams) <- getStreams
     let os@(Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
+    
     pure (filter oldStream, os, s)
   getStreams :: m RedisStreams
   getStreams = do
@@ -81,6 +93,18 @@ class (Monad m, MonadIO m) => MonadStore m where
   setReplicaSentOffset :: Int -> m ()
 
 -------------------------------------------------------------------------------------
+
+addChannelSubcriber :: BS.ByteString -> Socket -> ClientApp ()
+addChannelSubcriber channel sub = do
+  tv <- asks $ senvChannels . cenvShared
+  liftIO . atomically $ modifyTVar' tv (HM.alter (Just . (sub :) . fromMaybe []) channel)
+
+-- TODO: at some point, improve efficiency, don't use a list of sockets, use a set. a set does not have an Ord, so will need to store file descriptors, and socket <-> descriptor
+removeChannelSubscriber :: BS.ByteString -> Socket -> ClientApp ()
+removeChannelSubscriber channel sub = do
+  tv <- asks $ senvChannels . cenvShared
+  liftIO . atomically $ modifyTVar' tv (HM.alter (Just . removeSub sub . fromMaybe []) channel)
+  where removeSub sub = foldl' (\b curr -> if curr == sub then b else curr : b) []
 
 getWaiters :: ClientApp (TVar (M.Map BS.ByteString IS.IntSet))
 getWaiters = asks $ (.msBLPopWaiters) . senvStore . cenvShared
@@ -158,6 +182,7 @@ getSocket = asks $ (.ccfgSocket) . cenvConfig
 getClientReplication :: ClientApp ReplicationInfo
 getClientReplication = asks $ (.cfgReplication) . ccfgShared . cenvConfig
 
+
 ---------
 
 newMemoryStore :: IO MemoryStore
@@ -165,6 +190,25 @@ newMemoryStore = MemoryStore <$> newTVarIO M.empty <*> newTVarIO M.empty
 
 ----------------------------------------------------------------------------------
 -- ClientState
+
+getSubscribed :: ClientApp Bool
+getSubscribed = gets (.subscribeMode)
+
+setSubscribed :: Bool -> ClientApp ()
+setSubscribed sub = modify' (\cs -> cs { subscribeMode = sub })
+
+removeSubChannel :: BS.ByteString -> ClientApp ()
+removeSubChannel channel = do
+  ml <- gets (.subscribeChannels)
+  modify' (\cs -> cs { subscribeChannels = S.delete channel ml})
+
+getSubChannels :: ClientApp (S.Set BS.ByteString)
+getSubChannels = gets (.subscribeChannels)
+
+addSubChannel :: BS.ByteString -> ClientApp ()
+addSubChannel channel = do
+  ml <- gets (.subscribeChannels)
+  modify' (\cs -> cs { subscribeChannels = S.insert channel ml})
 
 updateMulti :: Bool -> ClientApp ()
 updateMulti state = modify' (\cs -> cs { multi = state })
