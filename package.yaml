@@ -23,6 +23,7 @@ dependencies:
   # - hashable
   - time # may help with the expiry function
   - async # may help with concurrency
+  - transformers
   - mtl # may help with structuring
   - base64-bytestring
   # Parsing libs

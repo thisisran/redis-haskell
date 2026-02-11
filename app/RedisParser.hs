@@ -95,9 +95,15 @@ commandParser = do
     "ZADD"        -> zaddParser n
     "ZRANK"       -> zrankParser n
     "ZRANGE"      -> zrangeParser n
+    "ZCARD"       -> zcardParser n
     _           -> fail "unsupported command"
 -- ===== command implementations =====
 -- Note: n counts *all* array elements including the command name itself.
+
+zcardParser :: Int -> A.Parser Command
+zcardParser n = do
+  expectArity [2] n
+  ZCard <$> bulkStringParser
 
 zrangeParser :: Int -> A.Parser Command
 zrangeParser n = do

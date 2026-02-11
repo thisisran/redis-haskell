@@ -150,6 +150,7 @@ data Command
   | ZAdd !BS.ByteString !Double !BS.ByteString
   | ZRank !BS.ByteString !BS.ByteString
   | ZRange !BS.ByteString !Int !Int
+  | ZCard !BS.ByteString
   | Cmd
   deriving (Show, Eq)
 

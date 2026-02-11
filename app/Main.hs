@@ -6,6 +6,8 @@ import System.FilePath ((</>))
 import System.Environment (getArgs)
 import System.IO (BufferMode (NoBuffering), hPutStrLn, hSetBuffering, stderr, stdout, withBinaryFile, IOMode(ReadMode), Handle, SeekMode(RelativeSeek), hSeek)
 
+import Control.Monad.Trans.Maybe (MaybeT (..), runMaybeT)
+
 import qualified Control.Concurrent.Async as SA
 -- import Control.Exception (IOException)
 import qualified Control.Exception as CE
@@ -556,6 +558,7 @@ zaddCommand name score member = do
 zrankCommand :: BS.ByteString -> BS.ByteString -> ClientApp Response
 zrankCommand name member = do
   (ZSet scoreMap memberDict) <- getZSet name
+
   case HM.lookup member memberDict of
     Just score -> do
       let precedingSets = M.elems (fst (M.split score scoreMap))
@@ -586,13 +589,18 @@ zrangeCommand name start end = do
           | -index > itemCount = 0
           | otherwise = itemCount + index
 
+zcardCommand :: BS.ByteString -> ClientApp Response
+zcardCommand name = do
+  (ZSet scoreMap _) <- getZSet name
+  pure $ Response (encodeInteger $ (sum . map S.size) $ M.elems scoreMap) emptyResponse
+
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
-                           (Subscribe _) -> True
-                           Ping          -> True
-                           (Publish _ _) -> True
-                           (Unsubscribe _) -> True
-                           _             -> False
+                           Subscribe {}   -> True
+                           Ping           -> True
+                           Publish {}     -> True
+                           Unsubscribe {} -> True
+                           _              -> False
 
 execSubCommand :: Command -> ClientApp ()
 execSubCommand cmd = do
@@ -616,30 +624,34 @@ execSubCommand cmd = do
 -- TODO: refactor the need for this function
 getCommandName :: Command -> BS.ByteString
 getCommandName cmd = case cmd of
-                       Echo {} -> "Echo"
-                       Set {} -> "Set"
-                       Get {} -> "Get"
-                       RPush {} -> "RPush"
-                       LPush {} -> "LPush"
-                       LRange {} -> "LRange"
-                       LLen {} -> "LLen"
-                       LPop {} -> "LPop"
-                       BLPop {} -> "BLPop"
-                       Type {} -> "Type"
-                       XAdd {} -> "XAdd"
-                       XRange {} -> "XRange"
-                       XRead {} -> "XRead"
-                       Incr {} -> "Incr"
-                       Multi -> "Multi"
-                       Exec -> "Exec"
-                       Discard -> "Discard"
-                       Info {} -> "Info"
+                       Echo {}     -> "Echo"
+                       Set {}      -> "Set"
+                       Get {}      -> "Get"
+                       RPush {}    -> "RPush"
+                       LPush {}    -> "LPush"
+                       LRange {}   -> "LRange"
+                       LLen {}     -> "LLen"
+                       LPop {}     -> "LPop"
+                       BLPop {}    -> "BLPop"
+                       Type {}     -> "Type"
+                       XAdd {}     -> "XAdd"
+                       XRange {}   -> "XRange"
+                       XRead {}    -> "XRead"
+                       Incr {}     -> "Incr"
+                       Multi       -> "Multi"
+                       Exec        -> "Exec"
+                       Discard     -> "Discard"
+                       Info {}     -> "Info"
                        ReplConf {} -> "ReplConf"
-                       Psync {} -> "Psync"
-                       Wait {} -> "Wait"
-                       Config {} -> "Config"
-                       Keys {} -> "Keys"
-                       ZAdd {} -> "ZAdd"
+                       Psync {}    -> "Psync"
+                       Wait {}     -> "Wait"
+                       Config {}   -> "Config"
+                       Keys {}     -> "Keys"
+                       ZAdd {}     -> "ZAdd"
+                       ZRank {}    -> "ZRank"
+                       ZRange {}   -> "ZRange"
+                       ZCard {}    -> "ZCard"
+
                        
 
 handleConnection :: ClientApp ()
@@ -697,6 +709,7 @@ handleConnection = go ""
                                             (ZAdd name score member) -> zaddCommand name score member
                                             (ZRank name member) -> zrankCommand name member
                                             (ZRange name start end) -> zrangeCommand name start end
+                                            (ZCard name) -> zcardCommand name
                                             Cmd  -> pure $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 liftIO $ send sock resp
                 nextAction
