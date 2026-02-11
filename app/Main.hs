@@ -572,6 +572,12 @@ zrankCommand name member = do
                     Nothing -> pure $ Response encodeNullBulkString emptyResponse
     Nothing -> pure $ Response encodeNullBulkString emptyResponse
 
+zrangeCommand :: BS.ByteString -> Int -> Int -> ClientApp Response
+zrangeCommand name start end = do
+  (ZSet scoreMap _) <- getZSet name
+  let allScores = M.elems scoreMap
+  pure $ Response (encodeArray True (take (end - start + 1) $ drop start (concatMap S.toAscList allScores))) emptyResponse
+
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
                            (Subscribe _) -> True
@@ -682,6 +688,7 @@ handleConnection = go ""
                                             (Publish channel msg) -> publishCommand channel msg
                                             (ZAdd name score member) -> zaddCommand name score member
                                             (ZRank name member) -> zrankCommand name member
+                                            (ZRange name start end) -> zrangeCommand name start end
                                             Cmd  -> pure $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 liftIO $ send sock resp
                 nextAction

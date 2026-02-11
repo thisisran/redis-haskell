@@ -94,9 +94,15 @@ commandParser = do
     "UNSUBSCRIBE" -> unsubcribeParser n
     "ZADD"        -> zaddParser n
     "ZRANK"       -> zrankParser n
+    "ZRANGE"      -> zrangeParser n
     _           -> fail "unsupported command"
 -- ===== command implementations =====
 -- Note: n counts *all* array elements including the command name itself.
+
+zrangeParser :: Int -> A.Parser Command
+zrangeParser n = do
+  expectArity [4] n
+  ZRange <$> bulkStringParser <*> (bulkStringStartParser >> AC8.decimal <* crlf) <*> (bulkStringStartParser >> AC8.decimal <* crlf)
 
 zrankParser :: Int -> A.Parser Command
 zrankParser n = do
