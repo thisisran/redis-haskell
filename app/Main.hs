@@ -255,22 +255,18 @@ xrangeEndHelper key f = do
 xrangeHelper :: BS.ByteString -> (EntryId -> EntryId -> Bool) -> RangeEntryId -> RangeEntryId -> ClientApp Response
 xrangeHelper key rangef (RangeEntryId mili1 mili2) (RangeEntryId seq1 seq2) = do
   (_, Stream oldStream, _) <- getStream key (const Nothing . M.filterWithKey (\_ _ -> True))
-  -- putStrLn $ show ((M.takeWhileAntitone (<= (EntryId 1526985054079 0)) $ M.dropWhileAntitone ((<=) (EntryId 1526985054069 0)) oldStream))
   let allKeysValues = M.toAscList (U.range rangef (EntryId mili1 mili2) (EntryId seq1 seq2) oldStream)
   let resp = parseKeysValues allKeysValues
   pure $ Response resp emptyResponse
   where
     parseKeysValues :: [(EntryId, RedisStreamValues)] -> BS.ByteString
     parseKeysValues keysValues =
-      "*"
-        <> (BS8.pack . show . length) keysValues
-        <> "\r\n"
+      "*" <> (BS8.pack . show . length) keysValues <> "\r\n"
         <> foldr (\(id, valuesMap) acc -> "*2\r\n" <> encodeBulkString (U.entryIdToBS id) <> convertMap valuesMap <> acc) BS.empty keysValues
     convertMap :: RedisStreamValues -> BS.ByteString
     convertMap l =
       "*"
-        <> (BS8.pack . show . (* 2) . length) l
-        <> "\r\n"
+        <> (BS8.pack . show . (* 2) . length) l <> "\r\n"
         <> foldr (\(k, v) acc -> encodeBulkString k <> encodeBulkString v <> acc) BS.empty l
 
 xrangeCommand :: BS.ByteString -> RangeEntryId -> RangeEntryId -> ClientApp Response
@@ -576,7 +572,19 @@ zrangeCommand :: BS.ByteString -> Int -> Int -> ClientApp Response
 zrangeCommand name start end = do
   (ZSet scoreMap _) <- getZSet name
   let allScores = M.elems scoreMap
-  pure $ Response (encodeArray True (take (end - start + 1) $ drop start (concatMap S.toAscList allScores))) emptyResponse
+  let allScoresList = concatMap S.toAscList allScores
+  let itemCount = length allScoresList
+  let nStart = normStart start itemCount
+  let nEnd = normStop end itemCount
+  pure $ Response (encodeArray True (take (nEnd - nStart + 1) $ drop nStart allScoresList)) emptyResponse
+  where normStart index itemCount
+          | index >= 0 = index
+          | -index > itemCount = 0
+          | otherwise = itemCount + index
+        normStop index itemCount
+          | index >= 0 = if index >= itemCount then itemCount - 1 else index
+          | -index > itemCount = 0
+          | otherwise = itemCount + index
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of

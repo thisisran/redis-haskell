@@ -102,7 +102,7 @@ commandParser = do
 zrangeParser :: Int -> A.Parser Command
 zrangeParser n = do
   expectArity [4] n
-  ZRange <$> bulkStringParser <*> (bulkStringStartParser >> AC8.decimal <* crlf) <*> (bulkStringStartParser >> AC8.decimal <* crlf)
+  ZRange <$> bulkStringParser <*> (bulkStringStartParser >> AC8.signed AC8.decimal <* crlf) <*> (bulkStringStartParser >> AC8.signed AC8.decimal <* crlf)
 
 zrankParser :: Int -> A.Parser Command
 zrankParser n = do
