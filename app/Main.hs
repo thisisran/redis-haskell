@@ -557,6 +557,21 @@ zaddCommand name score member = do
   currCount <- getZSetMemberCount name member
   pure $ Response (encodeInteger $ currCount - oldCount) emptyResponse
 
+zrankCommand :: BS.ByteString -> BS.ByteString -> ClientApp Response
+zrankCommand name member = do
+  (ZSet scoreMap memberDict) <- getZSet name
+  case HM.lookup member memberDict of
+    Just score -> do
+      let precedingSets = M.elems (fst (M.split score scoreMap))
+      let precedingCount = (sum . map S.size) precedingSets
+      case M.lookup score scoreMap of
+                    Just memberSet -> do
+                      case S.lookupIndex member memberSet of
+                        Just rank -> pure $ Response (encodeInteger (precedingCount + rank)) emptyResponse
+                        Nothing -> pure $ Response encodeNullBulkString emptyResponse
+                    Nothing -> pure $ Response encodeNullBulkString emptyResponse
+    Nothing -> pure $ Response encodeNullBulkString emptyResponse
+
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
                            (Subscribe _) -> True
@@ -666,6 +681,7 @@ handleConnection = go ""
                                             (Subscribe channel) -> subscribeCommand channel
                                             (Publish channel msg) -> publishCommand channel msg
                                             (ZAdd name score member) -> zaddCommand name score member
+                                            (ZRank name member) -> zrankCommand name member
                                             Cmd  -> pure $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 liftIO $ send sock resp
                 nextAction

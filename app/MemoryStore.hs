@@ -27,6 +27,7 @@ module MemoryStore
   , getReplicaSentOffset
   , setReplicaSentOffset
   , addMemberToZSet
+  , getZSet
   , getZSetMemberCount
   , getReplicaOffset
   , setReplicaOffset

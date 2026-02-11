@@ -148,6 +148,7 @@ data Command
   | Publish !BS.ByteString !BS.ByteString
   | Unsubscribe !BS.ByteString
   | ZAdd !BS.ByteString !Double !BS.ByteString
+  | ZRank !BS.ByteString !BS.ByteString
   | Cmd
   deriving (Show, Eq)
 
