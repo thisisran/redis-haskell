@@ -30,7 +30,7 @@ module MemoryStore
   , setReplicaOffset
   , addChannelSubcriber
   , removeChannelSubscriber
-  , getChannelClientCount
+  , getChannelClients
   , getSubscribed
   , setSubscribed
   , removeSubChannel
@@ -113,13 +113,13 @@ removeChannelSubscriber channel sub = do
   liftIO . atomically $ modifyTVar' tv (HM.alter (Just . removeSub sub . fromMaybe []) channel)
   where removeSub sub = foldl' (\b curr -> if curr == sub then b else curr : b) []
 
-getChannelClientCount :: BS.ByteString -> ClientApp Int
-getChannelClientCount channel = do
+getChannelClients :: BS.ByteString -> ClientApp [Socket]
+getChannelClients channel = do
   tv <- asks $ senvChannels . cenvShared
   hashmap <- liftIO $ readTVarIO tv
   case HM.lookup channel hashmap of
-    Just l -> pure $ length l
-    Nothing -> pure 0
+    Just l -> pure l
+    Nothing -> pure []
 
 getWaiters :: ClientApp (TVar (M.Map BS.ByteString IS.IntSet))
 getWaiters = asks $ (.msBLPopWaiters) . senvStore . cenvShared

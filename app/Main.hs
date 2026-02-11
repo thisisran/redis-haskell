@@ -542,8 +542,13 @@ subscribeCommand channel = do
 publishCommand :: BS.ByteString -> BS.ByteString -> ClientApp Response
 publishCommand channel msg = do
   socket <- getSocket
-  subCount <- getChannelClientCount channel
-  pure $ Response (encodeInteger subCount) emptyResponse
+  clientList <- getChannelClients channel
+  sendMessage clientList
+  pure $ Response (encodeInteger $ length clientList) emptyResponse
+  where sendMessage [] = pure ()
+        sendMessage (x:xs) = do
+          send x $ encodeArray True ["message", channel, msg]
+          sendMessage xs
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
