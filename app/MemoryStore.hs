@@ -285,7 +285,7 @@ addSubChannel channel = do
 updateMulti :: Bool -> ClientApp ()
 updateMulti state = modify' (\cs -> cs { multi = state })
 
-addMultiCommand :: ClientApp Response -> ClientApp ()
+addMultiCommand :: ClientApp (Either BS.ByteString Response) -> ClientApp ()
 addMultiCommand cmd = do
   ml <- gets (.multiList)
   modify' (\cs -> cs { multiList = ml ++ [cmd] })
@@ -296,5 +296,5 @@ resetMultiCommands = modify' (\cs -> cs { multiList = [] })
 getMulti :: ClientApp Bool
 getMulti = gets (.multi)
 
-getMultiList :: ClientApp [ClientApp Response]
+getMultiList :: ClientApp [ClientApp (Either BS.ByteString Response)]
 getMultiList = gets (.multiList)

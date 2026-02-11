@@ -249,7 +249,7 @@ data ClientEnv = ClientEnv
 
 data ClientState = ClientState
   { multi :: !Bool
-  , multiList :: [ClientApp Response]
+  , multiList :: [ClientApp (Either BS.ByteString Response)]
   , subscribeMode :: !Bool
   , subscribeChannels :: !(S.Set BS.ByteString)
   }
