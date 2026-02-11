@@ -33,7 +33,9 @@ module Types
   , runReplicaApp
   , runClientApp
   , SharedConfig (..)
-  , ZSet
+  , ZSetScoreMap
+  , ZSetMemberDict
+  , ZSet (..)
   , ZSets
   , ClientConfig (..)
   , CLIOptions (..)
@@ -211,7 +213,9 @@ data SharedConfig = SharedConfig
   , cfgReplication :: !ReplicationInfo
   } deriving stock (Eq, Show)
 
-type ZSet = (M.Map Double (S.Set BS.ByteString))
+type ZSetMemberDict = (HM.HashMap BS.ByteString Double)
+type ZSetScoreMap = (M.Map Double (S.Set BS.ByteString))
+data ZSet = ZSet ZSetScoreMap ZSetMemberDict
 type ZSets = TVar (HM.HashMap BS.ByteString ZSet)
 
 data SharedEnv = SharedEnv

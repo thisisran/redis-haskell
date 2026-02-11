@@ -552,9 +552,9 @@ publishCommand channel msg = do
 
 zaddCommand :: BS.ByteString -> Double -> BS.ByteString -> ClientApp Response
 zaddCommand name score member = do
-  oldCount <- getZSetMemberCount name score
+  oldCount <- getZSetMemberCount name member
   addMemberToZSet name score member
-  currCount <- getZSetMemberCount name score
+  currCount <- getZSetMemberCount name member
   pure $ Response (encodeInteger $ currCount - oldCount) emptyResponse
 
 approvedSubCommand :: Command -> Bool
