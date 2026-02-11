@@ -89,9 +89,22 @@ commandParser = do
     "CONFIG"   -> configParser n
     "KEYS"     -> keysParser n
     "SUBSCRIBE" -> subscribeParser n
-    _          -> fail "unsupported command"
+    "PUBLISH"   -> publishParser n
+    "COMMAND"   -> cmdParser n -- convenience method, to allow redis-cli with no arguments
+    _           -> fail "unsupported command"
 -- ===== command implementations =====
 -- Note: n counts *all* array elements including the command name itself.
+
+cmdParser :: Int -> A.Parser Command
+cmdParser n = do
+  expectArity [2] n
+  bulkStringStartParser >> AC8.stringCI "docs" >> crlf
+  pure Cmd
+  
+publishParser :: Int -> A.Parser Command
+publishParser n = do
+  expectArity [3] n
+  Publish <$> bulkStringParser <*> bulkStringParser
 
 subscribeParser :: Int -> A.Parser Command
 subscribeParser n = do

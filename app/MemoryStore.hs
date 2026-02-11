@@ -30,6 +30,7 @@ module MemoryStore
   , setReplicaOffset
   , addChannelSubcriber
   , removeChannelSubscriber
+  , getChannelClientCount
   , getSubscribed
   , setSubscribed
   , removeSubChannel
@@ -97,10 +98,13 @@ class (Monad m, MonadIO m) => MonadStore m where
 addChannelSubcriber :: BS.ByteString -> Socket -> ClientApp ()
 addChannelSubcriber channel sub = do
   tv <- asks $ senvChannels . cenvShared
-  liftIO . atomically $ modifyTVar' tv (HM.alter (Just . (sub :) . fromMaybe []) channel)
-  where exists sub = foldl' (\_ curr -> curr == sub) False
-        addSub sub currList = let addSub = not $ exists sub currList
-                              in if addSub then (sub :) else id
+  liftIO . atomically $
+    modifyTVar' tv (HM.alter (Just . addSub sub . fromMaybe []) channel)
+  where
+    addSub :: Socket -> [Socket] -> [Socket]
+    addSub s curr
+      | s `elem` curr = curr
+      | otherwise     = s : curr
 
 -- TODO: at some point, improve efficiency, don't use a list of sockets, use a set. a set does not have an Ord, so will need to store file descriptors, and socket <-> descriptor
 removeChannelSubscriber :: BS.ByteString -> Socket -> ClientApp ()
@@ -108,6 +112,14 @@ removeChannelSubscriber channel sub = do
   tv <- asks $ senvChannels . cenvShared
   liftIO . atomically $ modifyTVar' tv (HM.alter (Just . removeSub sub . fromMaybe []) channel)
   where removeSub sub = foldl' (\b curr -> if curr == sub then b else curr : b) []
+
+getChannelClientCount :: BS.ByteString -> ClientApp Int
+getChannelClientCount channel = do
+  tv <- asks $ senvChannels . cenvShared
+  hashmap <- liftIO $ readTVarIO tv
+  case HM.lookup channel hashmap of
+    Just l -> pure $ length l
+    Nothing -> pure 0
 
 getWaiters :: ClientApp (TVar (M.Map BS.ByteString IS.IntSet))
 getWaiters = asks $ (.msBLPopWaiters) . senvStore . cenvShared

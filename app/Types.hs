@@ -141,6 +141,8 @@ data Command
   | Config !ConfigArgs
   | Keys !BS.ByteString
   | Subscribe !BS.ByteString
+  | Publish !BS.ByteString !BS.ByteString
+  | Cmd
   deriving (Show, Eq)
 
 data EntryId = EntryId !Word64 !Word64

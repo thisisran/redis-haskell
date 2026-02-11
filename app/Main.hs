@@ -539,11 +539,18 @@ subscribeCommand channel = do
   addChannelSubcriber channel socket
   pure $ Response (encodeArray False [encodeBulkString "subscribe", encodeBulkString channel, encodeInteger $ length currChannels]) emptyResponse
 
+publishCommand :: BS.ByteString -> BS.ByteString -> ClientApp Response
+publishCommand channel msg = do
+  socket <- getSocket
+  subCount <- getChannelClientCount channel
+  pure $ Response (encodeInteger subCount) emptyResponse
+
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
-                           (Subscribe channel) -> True
-                           Ping                -> True
-                           _                   -> False
+                           (Subscribe _) -> True
+                           Ping          -> True
+                           (Publish _ _) -> True
+                           _             -> False
 
 execSubCommand :: Command -> ClientApp ()
 execSubCommand cmd = do
@@ -551,8 +558,11 @@ execSubCommand cmd = do
   case cmd of
     (Subscribe channel) -> do
       (Response resp _) <- subscribeCommand channel
-      send socket resp
-    Ping                -> send socket $ encodeArray True ["pong", ""]
+      liftIO $ send socket resp
+    Ping                -> liftIO $ send socket $ encodeArray True ["pong", ""]
+    Publish channel msg -> do
+      (Response resp _) <- publishCommand channel msg
+      liftIO $ send socket resp
 
 getCommandName :: Command -> BS.ByteString
 getCommandName cmd = case cmd of
@@ -597,7 +607,7 @@ handleConnection = go ""
             -- keep partial bytes for next recv
             RParsed cmd rest -> do
               subMode <- getSubscribed
-              if subMode then
+              if subMode then do
                  if approvedSubCommand cmd
                  then execSubCommand cmd
                  else do
@@ -632,6 +642,8 @@ handleConnection = go ""
                                             (Config opt) -> configCommand opt
                                             (Keys filter) -> keysCommand filter
                                             (Subscribe channel) -> subscribeCommand channel
+                                            (Publish channel msg) -> publishCommand channel msg
+                                            Cmd  -> pure $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 liftIO $ send sock resp
                 nextAction
               go rest                -- rest may already contain next command
