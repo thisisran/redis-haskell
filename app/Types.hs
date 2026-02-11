@@ -142,6 +142,7 @@ data Command
   | Keys !BS.ByteString
   | Subscribe !BS.ByteString
   | Publish !BS.ByteString !BS.ByteString
+  | Unsubscribe !BS.ByteString
   | Cmd
   deriving (Show, Eq)
 

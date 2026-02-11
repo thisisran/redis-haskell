@@ -91,9 +91,15 @@ commandParser = do
     "SUBSCRIBE" -> subscribeParser n
     "PUBLISH"   -> publishParser n
     "COMMAND"   -> cmdParser n -- convenience method, to allow redis-cli with no arguments
+    "UNSUBSCRIBE" -> unsubcribeParser n
     _           -> fail "unsupported command"
 -- ===== command implementations =====
 -- Note: n counts *all* array elements including the command name itself.
+
+unsubcribeParser :: Int -> A.Parser Command
+unsubcribeParser n = do
+  expectArity [2] n
+  Unsubscribe <$> bulkStringParser
 
 cmdParser :: Int -> A.Parser Command
 cmdParser n = do

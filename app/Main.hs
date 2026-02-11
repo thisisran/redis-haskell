@@ -555,6 +555,7 @@ approvedSubCommand cmd = case cmd of
                            (Subscribe _) -> True
                            Ping          -> True
                            (Publish _ _) -> True
+                           (Unsubscribe _) -> True
                            _             -> False
 
 execSubCommand :: Command -> ClientApp ()
@@ -568,6 +569,13 @@ execSubCommand cmd = do
     Publish channel msg -> do
       (Response resp _) <- publishCommand channel msg
       liftIO $ send socket resp
+    Unsubscribe channel -> do
+      socket <- getSocket
+      setSubscribed False
+      removeSubChannel channel
+      removeChannelSubscriber channel socket
+      remaining <- getSubChannels
+      send socket $ encodeArray False [encodeBulkString "unsubscribe", encodeBulkString channel, encodeInteger (S.size remaining)]
 
 getCommandName :: Command -> BS.ByteString
 getCommandName cmd = case cmd of
