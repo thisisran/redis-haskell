@@ -550,6 +550,13 @@ publishCommand channel msg = do
           send x $ encodeArray True ["message", channel, msg]
           sendMessage xs
 
+zaddCommand :: BS.ByteString -> Double -> BS.ByteString -> ClientApp Response
+zaddCommand name score member = do
+  oldCount <- getZSetMemberCount name score
+  addMemberToZSet name score member
+  currCount <- getZSetMemberCount name score
+  pure $ Response (encodeInteger $ currCount - oldCount) emptyResponse
+
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
                            (Subscribe _) -> True
@@ -577,31 +584,33 @@ execSubCommand cmd = do
       remaining <- getSubChannels
       send socket $ encodeArray False [encodeBulkString "unsubscribe", encodeBulkString channel, encodeInteger (S.size remaining)]
 
+-- TODO: refactor the need for this function
 getCommandName :: Command -> BS.ByteString
 getCommandName cmd = case cmd of
-                       (Echo _) -> "Echo"
-                       (Set _ _ _) -> "Set"
-                       (Get _) -> "Get"
-                       (RPush _ _) -> "RPush"
-                       (LPush _ _) -> "LPush"
-                       (LRange _ _ _) -> "LRange"
-                       (LLen _) -> "LLen"
-                       (LPop _ _) -> "LPop"
-                       (BLPop _ _) -> "BLPop"
-                       (Type _) -> "Type"
-                       (XAdd _ _ _) -> "XAdd"
-                       (XRange _ _ _) -> "XRange"
-                       (XRead _ _) -> "XRead"
-                       (Incr _) -> "Incr"
+                       Echo {} -> "Echo"
+                       Set {} -> "Set"
+                       Get {} -> "Get"
+                       RPush {} -> "RPush"
+                       LPush {} -> "LPush"
+                       LRange {} -> "LRange"
+                       LLen {} -> "LLen"
+                       LPop {} -> "LPop"
+                       BLPop {} -> "BLPop"
+                       Type {} -> "Type"
+                       XAdd {} -> "XAdd"
+                       XRange {} -> "XRange"
+                       XRead {} -> "XRead"
+                       Incr {} -> "Incr"
                        Multi -> "Multi"
                        Exec -> "Exec"
                        Discard -> "Discard"
-                       (Info _) -> "Info"
-                       (ReplConf _) -> "ReplConf"
-                       (Psync _) -> "Psync"
-                       (Wait _ timeout) -> "Wait"
-                       (Config _) -> "Config"
-                       (Keys _) -> "Keys"
+                       Info {} -> "Info"
+                       ReplConf {} -> "ReplConf"
+                       Psync {} -> "Psync"
+                       Wait {} -> "Wait"
+                       Config {} -> "Config"
+                       Keys {} -> "Keys"
+                       ZAdd {} -> "ZAdd"
                        
 
 handleConnection :: ClientApp ()
@@ -656,6 +665,7 @@ handleConnection = go ""
                                             (Keys filter) -> keysCommand filter
                                             (Subscribe channel) -> subscribeCommand channel
                                             (Publish channel msg) -> publishCommand channel msg
+                                            (ZAdd name score member) -> zaddCommand name score member
                                             Cmd  -> pure $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 liftIO $ send sock resp
                 nextAction
@@ -794,11 +804,12 @@ main = do
               WantMaster -> SharedConfig port dir rdbFileName (Master (BS8.unpack repID) 0)
               WantSlave wantHost wantPort -> SharedConfig port dir rdbFileName (Slave wantHost wantPort)
 
+  newZSets <- newTVarIO HM.empty
   newReplicas <- newTVarIO []
   sentOffset <- newTVarIO 0
   complReplicas <- newTVarIO 0
   newChannels <- newTVarIO HM.empty
-  let sharedEnv = SharedEnv store sharedCfg newReplicas sentOffset complReplicas newChannels
+  let sharedEnv = SharedEnv store newZSets sharedCfg newReplicas sentOffset complReplicas newChannels
 
   newReplicaOffset <- newTVarIO 0
   let replicaEnv = ReplicaEnv sharedEnv newReplicaOffset

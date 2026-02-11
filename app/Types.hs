@@ -33,6 +33,8 @@ module Types
   , runReplicaApp
   , runClientApp
   , SharedConfig (..)
+  , ZSet
+  , ZSets
   , ClientConfig (..)
   , CLIOptions (..)
   , ReplicationInfo (..)
@@ -143,6 +145,7 @@ data Command
   | Subscribe !BS.ByteString
   | Publish !BS.ByteString !BS.ByteString
   | Unsubscribe !BS.ByteString
+  | ZAdd !BS.ByteString !Double !BS.ByteString
   | Cmd
   deriving (Show, Eq)
 
@@ -208,8 +211,12 @@ data SharedConfig = SharedConfig
   , cfgReplication :: !ReplicationInfo
   } deriving stock (Eq, Show)
 
+type ZSet = (M.Map Double (S.Set BS.ByteString))
+type ZSets = TVar (HM.HashMap BS.ByteString ZSet)
+
 data SharedEnv = SharedEnv
   { senvStore                :: !MemoryStore
+  , senvSets                 :: !ZSets
   , senvConfig               :: !SharedConfig
   , senvReplicas             :: TVar [Socket]
   , senvReplicaSentOffset    :: TVar Int -- byte count of commands sent to replicas

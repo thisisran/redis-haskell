@@ -26,6 +26,8 @@ module MemoryStore
   , addReplica
   , getReplicaSentOffset
   , setReplicaSentOffset
+  , addMemberToZSet
+  , getZSetMemberCount
   , getReplicaOffset
   , setReplicaOffset
   , addChannelSubcriber
@@ -92,6 +94,21 @@ class (Monad m, MonadIO m) => MonadStore m where
     liftIO . atomically $ modifyTVar' tv (\l -> l ++ [sock])
   getReplicaSentOffset :: m Int
   setReplicaSentOffset :: Int -> m ()
+  getZSet :: BS.ByteString -> m ZSet
+  getZSets :: m ZSets
+  addMemberToZSet :: BS.ByteString -> Double -> BS.ByteString -> m ()
+  addMemberToZSet setName score member = do
+    currSetMap <- getZSet setName
+    tvSets <- getZSets
+    let updatedSetMap = M.alter (Just . S.insert member . fromMaybe S.empty) score currSetMap
+    liftIO . atomically $
+      modifyTVar' tvSets (HM.alter (Just . const updatedSetMap . fromMaybe M.empty) setName)
+  getZSetMemberCount :: BS.ByteString -> Double -> m Int
+  getZSetMemberCount setName score = do
+    set <- getZSet setName
+    case M.lookup score set of
+      Just curr -> pure $ S.size curr
+      Nothing  -> pure 0
 
 -------------------------------------------------------------------------------------
 
@@ -135,7 +152,17 @@ instance MonadStore ReplicaApp where
   setReplicaSentOffset offset = do
     tv <- asks $ senvReplicaSentOffset . renvShared
     liftIO . atomically $ modifyTVar' tv (const offset)
-
+  getZSet name = do
+    tv <- asks $ senvSets . renvShared
+    sets <- liftIO $ readTVarIO tv
+    case HM.lookup name sets of
+      Just s -> pure s
+      Nothing -> do
+        let newSet = M.empty -- create a new set, and return it
+        liftIO . atomically $ modifyTVar' tv (\curr -> HM.insert name newSet sets)
+        pure newSet
+  getZSets = asks $ senvSets . renvShared
+  
 instance MonadStore ClientApp where
   getData = asks $ (.msData) . senvStore . cenvShared
   getPort = asks $ (.cfgPort) . senvConfig . cenvShared
@@ -147,6 +174,16 @@ instance MonadStore ClientApp where
   setReplicaSentOffset offset = do
     tv <- asks $ senvReplicaSentOffset . cenvShared
     liftIO . atomically $ modifyTVar' tv (const offset)
+  getZSet name = do
+    tv <- asks $ senvSets . cenvShared
+    sets <- liftIO $ readTVarIO tv
+    case HM.lookup name sets of
+      Just s -> pure s
+      Nothing -> do
+        let newSet = M.empty -- create a new set, and return it
+        liftIO . atomically $ modifyTVar' tv (\curr -> HM.insert name newSet sets)
+        pure newSet
+  getZSets = asks $ senvSets . cenvShared
 
 delDataEntry :: BS.ByteString -> ClientApp ()
 delDataEntry key = do

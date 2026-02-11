@@ -92,9 +92,15 @@ commandParser = do
     "PUBLISH"   -> publishParser n
     "COMMAND"   -> cmdParser n -- convenience method, to allow redis-cli with no arguments
     "UNSUBSCRIBE" -> unsubcribeParser n
+    "ZADD"        -> zaddParser n
     _           -> fail "unsupported command"
 -- ===== command implementations =====
 -- Note: n counts *all* array elements including the command name itself.
+
+zaddParser :: Int -> A.Parser Command
+zaddParser n = do
+  expectArity [4] n
+  ZAdd <$> bulkStringParser <*> (bulkStringStartParser >> AC8.double <* crlf) <*> bulkStringParser
 
 unsubcribeParser :: Int -> A.Parser Command
 unsubcribeParser n = do
