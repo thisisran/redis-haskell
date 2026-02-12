@@ -29,7 +29,6 @@ module Types
   , MemoryStore (..)
   , ClientState (..)
   , Response (..)
-  , emptyResponse
   , RedisStreamValues
   , RedisStream
   , RedisStreams
@@ -288,13 +287,8 @@ data ClientState = ClientState
   , isAuth            :: !Bool
   }
 
-data Response = Response
-  { rspBytes :: BS.ByteString
-  , rspAfter :: ClientApp ()
-  }
-
-emptyResponse :: ClientApp ()
-emptyResponse = pure ()
+data Response = RspNormal !BS.ByteString
+              | RspContinue { resp :: !BS.ByteString, afterOp :: ClientApp () }
 
 newtype ReplicaApp a = App { unReplicaApp :: ReaderT ReplicaEnv IO a }
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader ReplicaEnv, MonadUnliftIO)
