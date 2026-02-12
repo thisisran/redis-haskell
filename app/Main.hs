@@ -668,6 +668,11 @@ geoSearchCommand name longitude latitude radius unit = do
   where calcDistance score centerLong centerLat = let (lat1, long1) = U.deinterleaveGeo score
                                                   in U.calcGeoDistance (long1, lat1) (centerLong, centerLat)
 
+aclCommand :: AclSubCmd -> ClientApp (Either BS.ByteString Response)
+aclCommand opt =
+  case opt of
+    AclWhoAmI -> pure $ Right $ Response (encodeBulkString "default") emptyResponse
+
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
                            Subscribe {}   -> True
@@ -792,6 +797,7 @@ handleConnection = go ""
                    (GeoPos name member) -> geoPosCommand name member
                    (GeoDist name member1 member2) -> geoDistCommand name member1 member2
                    (GeoSearch name longitude latitude radius unit) -> geoSearchCommand name longitude latitude radius unit
+                   (Acl opt) -> aclCommand opt
                    Cmd  -> pure $ Right $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 case eitherResp of
                   Right (Response resp nextAction) -> liftIO (send sock resp) >> nextAction

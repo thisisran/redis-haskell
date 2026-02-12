@@ -5,6 +5,7 @@ module Types
   ( RParserResult (..)
   , Command (..)
   , DistUnit (..)
+  , AclSubCmd (..)
   , StringParserResult (..)
   , TCPClientAckResult (..)
   , TCPReceivedResult (..)
@@ -125,6 +126,9 @@ data DistUnit = DistMeter
               | DistMile
               deriving stock (Eq, Show)
 
+data AclSubCmd = AclWhoAmI
+              deriving stock (Eq, Show)
+
 data Command
   = Ping
   | Echo !BS.ByteString
@@ -163,6 +167,7 @@ data Command
   | GeoPos !BS.ByteString ![BS.ByteString]
   | GeoDist !BS.ByteString !BS.ByteString !BS.ByteString
   | GeoSearch !BS.ByteString Double Double Double DistUnit
+  | Acl AclSubCmd
   | Cmd
   deriving (Show, Eq)
 

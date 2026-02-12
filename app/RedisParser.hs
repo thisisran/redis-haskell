@@ -102,9 +102,16 @@ commandParser = do
     "GEOPOS"      -> geoPosParser n
     "GEODIST"     -> geoDistParser n
     "GEOSEARCH"   -> geoSearchParser n
+    "ACL"         -> aclParser n
     _           -> fail "unsupported command"
 
 -- Note: n counts *all* array elements including the command name itself.
+
+aclParser :: Int -> A.Parser Command
+aclParser n = do
+  expectMinArity 2 n
+  void bulkStringStartParser >> AC8.stringCI "WHOAMI" <* crlf
+  pure $ Acl AclWhoAmI
 
 geoSearchParser :: Int -> A.Parser Command
 geoSearchParser n = do
