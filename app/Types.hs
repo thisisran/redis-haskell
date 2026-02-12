@@ -259,6 +259,7 @@ data SharedEnv = SharedEnv
   , senvReplicaSentOffset    :: TVar Int -- byte count of commands sent to replicas
   , senvCompleteReplicaCount :: TVar Int
   , senvChannels             :: TVar (HM.HashMap BS.ByteString [Socket])
+  , senvIsAuth               :: TVar Bool
   }
 
 data ClientConfig = ClientConfig
@@ -283,6 +284,7 @@ data ClientState = ClientState
   , subscribeMode     :: !Bool
   , subscribeChannels :: !(S.Set BS.ByteString)
   , userData          :: !UserData
+  , isAuth            :: !Bool
   }
 
 data Response = Response

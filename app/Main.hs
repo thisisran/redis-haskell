@@ -685,6 +685,15 @@ aclCommand opt =
       UserData {flags = fl, passwords = ps} <- gets userData
       let newFlags = delete "nopass" fl
       let newPasswords = (B16.encode . SHA256.hash) password : ps
+
+      -- this client is now authcenticated
+      modify' (\cs -> cs {isAuth = True})
+
+      -- Update this server now requires authentication
+      tv <- asks $ senvIsAuth . cenvShared
+      liftIO . atomically $
+        modifyTVar' tv (const True)
+        
       modify' (\cs -> cs { userData = UserData {name = user, passwords = newPasswords, flags = newFlags }})
       pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
 
@@ -693,8 +702,12 @@ authCommand userName password = do
   UserData {name = user, flags = fl, passwords = ps} <- gets userData
   let encodedPass = (B16.encode . SHA256.hash) password
   if user == userName && elem encodedPass ps
-  then pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
-  else pure $ Right $ Response (encodeSimpleError "WRONGPASS" "invalid username-password pair or user is disabled.") emptyResponse
+  then do
+    modify' (\cs -> cs {isAuth = True}) -- this client is now authcenticated
+    pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
+  else do
+    pure $ Right $ Response (encodeSimpleError "WRONGPASS" "invalid username-password pair or user is disabled.") emptyResponse
+
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
@@ -773,59 +786,63 @@ handleConnection = go ""
             RParserNeedMore -> go (acc <> buf)
             -- keep partial bytes for next recv
             RParsed cmd rest -> do
-              subMode <- getSubscribed
-              if subMode then do
-                 if approvedSubCommand cmd
-                 then execSubCommand cmd
-                 else do
-                   let commandName = getCommandName cmd
-                   liftIO $ send sock $ encodeSimpleError "ERR" ("Can't execute '" <> commandName <> "' when one or more subscriptions exist")
-              else do
-                eitherResp <- case cmd of
-                   Ping -> handleMultiCmd $ pure $ Right $ Response (encodeSimpleString "PONG") emptyResponse
-                   (Echo str) -> handleMultiCmd $ pure $ Right $ Response (encodeBulkString str) emptyResponse
-                   (Set key val args) -> handleMultiCmd $ setCommand key val args
-                   (Get key) -> handleMultiCmd $ getCommand key
-                   (RPush key values) -> handleMultiCmd $ pushCommand key values RightPushCmd
-                   (LPush key values) -> handleMultiCmd $ pushCommand key values LeftPushCmd
-                   (LRange key start stop) -> handleMultiCmd $ lrangeCommand key start stop
-                   (LLen key) -> handleMultiCmd $ llenCommand key
-                   (LPop key count) -> handleMultiCmd $ lpopCommand key count
-                   (BLPop key timeout) -> handleMultiCmd $ blpopCommand key timeout clientID
-                   (Type key) -> handleMultiCmd $ typeCommand key
-                   (XAdd streamID entryID values) -> handleMultiCmd $ xaddCommand streamID entryID values
-                   (XRange key start end) -> handleMultiCmd $ xrangeCommand key start end
-                   (XRead keysIds timeout) -> handleMultiCmd $ xreadCommand keysIds timeout
-                   (Incr key) -> handleMultiCmd $ incrCommand key
-                   Multi -> do
-                     updateMulti True
-                     pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
-                   Exec -> execCommand
-                   Discard -> discardCommand
-                   (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
-                   (ReplConf replOptions) -> replConfCommand replOptions
-                   (Psync req) -> psyncCommand req
-                   (Wait replicaNum timeout) -> waitCommand replicaNum timeout
-                   (Config opt) -> configCommand opt
-                   (Keys filter) -> keysCommand filter
-                   (Subscribe channel) -> subscribeCommand channel
-                   (Publish channel msg) -> publishCommand channel msg
-                   (ZAdd name score member) -> zaddCommand name score member
-                   (ZRank name member) -> zrankCommand name member
-                   (ZRange name start end) -> zrangeCommand name start end
-                   (ZCard name) -> zcardCommand name
-                   (ZScore name member) -> zscoreCommand name member
-                   (ZRem name member) -> zremCommand name member
-                   (GeoAdd name longtitude latitude member) -> geoAddCommand name longtitude latitude member
-                   (GeoPos name member) -> geoPosCommand name member
-                   (GeoDist name member1 member2) -> geoDistCommand name member1 member2
-                   (GeoSearch name longitude latitude radius unit) -> geoSearchCommand name longitude latitude radius unit
-                   (Auth userName password) -> authCommand userName password
-                   (Acl opt) -> aclCommand opt
-                   Cmd  -> pure $ Right $ Response encodeEmptyArray emptyResponse -- convenience command for running redis-cli in bulk mode
-                case eitherResp of
-                  Right (Response resp nextAction) -> liftIO (send sock resp) >> nextAction
-                  Left _ -> pure ()
+              tvServerAuth <- asks $ senvIsAuth . cenvShared
+              isServerAuth <- liftIO $ readTVarIO tvServerAuth
+              isUserAuth <- gets isAuth
+              if (isServerAuth && isUserAuth) || not isServerAuth then do
+                subMode <- getSubscribed
+                if subMode then do
+                   if approvedSubCommand cmd then execSubCommand cmd
+                   else do
+                     let commandName = getCommandName cmd
+                     liftIO $ send sock $ encodeSimpleError "ERR" ("Can't execute '" <> commandName <> "' when one or more subscriptions exist")
+                else do
+                  eitherResp <- case cmd of
+                     Ping -> handleMultiCmd $ pure $ Right $ Response (encodeSimpleString "PONG") emptyResponse
+                     (Echo str) -> handleMultiCmd $ pure $ Right $ Response (encodeBulkString str) emptyResponse
+                     (Set key val args) -> handleMultiCmd $ setCommand key val args
+                     (Get key) -> handleMultiCmd $ getCommand key
+                     (RPush key values) -> handleMultiCmd $ pushCommand key values RightPushCmd
+                     (LPush key values) -> handleMultiCmd $ pushCommand key values LeftPushCmd
+                     (LRange key start stop) -> handleMultiCmd $ lrangeCommand key start stop
+                     (LLen key) -> handleMultiCmd $ llenCommand key
+                     (LPop key count) -> handleMultiCmd $ lpopCommand key count
+                     (BLPop key timeout) -> handleMultiCmd $ blpopCommand key timeout clientID
+                     (Type key) -> handleMultiCmd $ typeCommand key
+                     (XAdd streamID entryID values) -> handleMultiCmd $ xaddCommand streamID entryID values
+                     (XRange key start end) -> handleMultiCmd $ xrangeCommand key start end
+                     (XRead keysIds timeout) -> handleMultiCmd $ xreadCommand keysIds timeout
+                     (Incr key) -> handleMultiCmd $ incrCommand key
+                     Multi -> do
+                       updateMulti True
+                       pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
+                     Exec -> execCommand
+                     Discard -> discardCommand
+                     (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
+                     (ReplConf replOptions) -> replConfCommand replOptions
+                     (Psync req) -> psyncCommand req
+                     (Wait replicaNum timeout) -> waitCommand replicaNum timeout
+                     (Config opt) -> configCommand opt
+                     (Keys filter) -> keysCommand filter
+                     (Subscribe channel) -> subscribeCommand channel
+                     (Publish channel msg) -> publishCommand channel msg
+                     (ZAdd name score member) -> zaddCommand name score member
+                     (ZRank name member) -> zrankCommand name member
+                     (ZRange name start end) -> zrangeCommand name start end
+                     (ZCard name) -> zcardCommand name
+                     (ZScore name member) -> zscoreCommand name member
+                     (ZRem name member) -> zremCommand name member
+                     (GeoAdd name longtitude latitude member) -> geoAddCommand name longtitude latitude member
+                     (GeoPos name member) -> geoPosCommand name member
+                     (GeoDist name member1 member2) -> geoDistCommand name member1 member2
+                     (GeoSearch name longitude latitude radius unit) -> geoSearchCommand name longitude latitude radius unit
+                     (Auth userName password) -> authCommand userName password
+                     (Acl opt) -> aclCommand opt
+                     Cmd  -> pure $ Right $ Response encodeEmptyArray emptyResponse -- convenience command for running redis-cli in bulk mode
+                  case eitherResp of
+                    Right (Response resp nextAction) -> liftIO (send sock resp) >> nextAction
+                    Left _ -> pure ()
+              else liftIO $ send sock (encodeSimpleError "NOAUTH" "Authentication required.")
               go rest                -- rest may already contain next command
             RParserErr e -> do
               liftIO $ send sock e
@@ -978,8 +995,16 @@ main = do
   sentOffset <- newTVarIO 0
   complReplicas <- newTVarIO 0
   newChannels <- newTVarIO HM.empty
+  newIsAuth <- newTVarIO False
   
-  let sharedEnv = SharedEnv store newZSets sharedCfg newReplicas sentOffset complReplicas newChannels
+  let sharedEnv = SharedEnv { senvStore = store
+                            , senvSets = newZSets
+                            , senvConfig = sharedCfg
+                            , senvReplicas = newReplicas
+                            , senvReplicaSentOffset = sentOffset
+                            , senvCompleteReplicaCount = complReplicas
+                            , senvChannels = newChannels
+                            , senvIsAuth = newIsAuth}
 
   newReplicaOffset <- newTVarIO 0
   let replicaEnv = ReplicaEnv sharedEnv newReplicaOffset
@@ -999,7 +1024,12 @@ main = do
 
     let newUserData = UserData "default" ["nopass"] []
 
-    let cs = ClientState {multi = False, multiList = [], subscribeMode = False, subscribeChannels = S.empty, userData = newUserData}
+    let cs = ClientState { multi = False
+                         , multiList = []
+                         , subscribeMode = False
+                         , subscribeChannels = S.empty
+                         , userData = newUserData
+                         , isAuth = False }
 
     let clientCfg = ClientConfig clientID socket sharedCfg
 
