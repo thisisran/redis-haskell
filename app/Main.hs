@@ -625,7 +625,7 @@ geoAddCommand name longitude latitude member = do
   else if latitude >= 85.05112878 || latitude <= -85.05112878
        then pure $ Right $ Response (encodeSimpleError "latitude should be between -85.05112878 and 85.05112878 degrees") emptyResponse
        else do
-         zaddCommand name 0 member >>= \case
+         zaddCommand name (U.interleaveGeo latitude longitude) member >>= \case
             Right (Response resp _) -> pure $ Right $ Response (encodeInteger 1) emptyResponse
             Left _                  -> pure $ Left "Error in GeoAdd Command"
 

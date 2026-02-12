@@ -1,3 +1,5 @@
+{-# LANGUAGE BangPatterns #-}
+
 module Utilities
   ( bsToLower
   , bsToInteger
@@ -7,10 +9,15 @@ module Utilities
   , hasElapsedSince
   , entryIdToBS
   , range
-  -- , renderParseError
   , randomAlphaNum40BS
   , decodeRdbBase64
   , emptyRdbFile
+  , spreadInt32ToInt64
+  , twoBytesToInt
+  , fourBytesToInt
+  , eightBytesToInt
+  , interleaveGeo
+  , deinterleaveGeo
   ) where
 
 import System.Random.Stateful (uniformRM, globalStdGen)
@@ -23,7 +30,9 @@ import Data.Char (toLower)
 import Text.Read (readMaybe)
 
 import Data.Void (Void)
-import Data.Bits ((.&.))
+
+import Data.Bits
+import Data.Word
 
 import qualified Data.Map.Strict as M
 
@@ -38,6 +47,90 @@ import Types (EntryId (..), SetExpiry (..), MemoryStoreEntry (..), ExpireDuratio
 import MemoryStore (MonadStore, setDataEntry)
 
 import Data.Time.Clock.POSIX (getPOSIXTime)
+
+minLatitude, maxLatitude, minLongitude, maxLongitude :: Double
+minLatitude  = -85.05112878
+maxLatitude  =  85.05112878
+minLongitude = -180.0
+maxLongitude =  180.0
+
+latRange, lonRange :: Double
+latRange = maxLatitude - minLatitude
+lonRange = maxLongitude - minLongitude
+
+scale26 :: Double
+scale26 = 2^(26 :: Int)
+
+normalizeTruncate :: Double -> Double -> (Word32, Word32)
+normalizeTruncate lat lon = 
+      let nlat = scale26 * (lat - minLatitude)  / latRange
+          nlon = scale26 * (lon - minLongitude) / lonRange
+          ilat = fromIntegral (floor nlat :: Integer) :: Word32
+          ilon = fromIntegral (floor nlon :: Integer) :: Word32
+      in (ilat, ilon)
+
+spreadInt32ToInt64 :: Word32 -> Word64
+spreadInt32ToInt64 v0 =
+  let !v1 = fromIntegral v0 :: Word64
+      !a  = (v1 .|. (v1 `shiftL` 16)) .&. 0x0000FFFF0000FFFF
+      !b  = (a  .|. (a  `shiftL` 8 )) .&. 0x00FF00FF00FF00FF
+      !c  = (b  .|. (b  `shiftL` 4 )) .&. 0x0F0F0F0F0F0F0F0F
+      !d  = (c  .|. (c  `shiftL` 2 )) .&. 0x3333333333333333
+      !e  = (d  .|. (d  `shiftL` 1 )) .&. 0x5555555555555555
+  in e
+
+interleaveGeo :: Double -> Double -> Double
+interleaveGeo lat lon = let (normLat, normLong) = normalizeTruncate lat lon
+                            !spreadX = spreadInt32ToInt64 normLat
+                            !spreadY = spreadInt32ToInt64 normLong
+                            !shiftedY = spreadY `shiftL` 1
+                        in fromIntegral $ spreadX .|. shiftedY
+
+compactInt64ToInt32 :: Word64 -> Word32
+compactInt64ToInt32 v0 =
+  let !a = v0 .&. 0x5555555555555555
+      !b = (a  .|. (a  `shiftR` 1 )) .&. 0x3333333333333333
+      !c = (b  .|. (b  `shiftR` 2 )) .&. 0x0F0F0F0F0F0F0F0F
+      !d = (c  .|. (c  `shiftR` 4 )) .&. 0x00FF00FF00FF00FF
+      !e = (d  .|. (d  `shiftR` 8 )) .&. 0x0000FFFF0000FFFF
+      !f = (e  .|. (e  `shiftR` 16)) .&. 0x00000000FFFFFFFF
+  in fromIntegral f
+
+deinterleaveGeo :: Word64 -> (Double, Double)
+deinterleaveGeo geo =
+  let !x = geo
+      !y = geo `shiftR` 1
+      !gridLat = fromIntegral (compactInt64ToInt32 x) :: Double
+      !gridLon = fromIntegral (compactInt64ToInt32 y) :: Double
+      latMin = minLatitude  + latRange * (gridLat / scale26)
+      latMax = minLatitude  + latRange * ((gridLat + 1) / scale26)
+      lonMin = minLongitude + lonRange * (gridLon / scale26)
+      lonMax = minLongitude + lonRange * ((gridLon + 1) / scale26)
+  in ((latMin + latMax) / 2, (lonMin + lonMax) / 2)
+
+-------------------------------------------------------------------------------------------------
+
+twoBytesToInt :: Word8 -> Word8 -> Int
+twoBytesToInt hi lo =
+  fromIntegral ((fromIntegral hi :: Word16) `shiftL` 8 .|. fromIntegral lo)
+
+fourBytesToInt :: Word8 -> Word8 -> Word8 -> Word8 -> Int
+fourBytesToInt hi1 hi2 lo1 lo2 =
+  fromIntegral ((fromIntegral hi1 :: Word32) `shiftL` 24 .|.
+                (fromIntegral hi2 `shiftL` 16) .|.
+                (fromIntegral lo1 `shiftL` 8) .|.
+                fromIntegral lo2)
+
+eightBytesToInt :: Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Int
+eightBytesToInt w1 w2 w3 w4 w5 w6 w7 w8 =
+  (fromIntegral w1 `shiftL` 56) .|.
+  (fromIntegral w2 `shiftL` 48) .|.
+  (fromIntegral w3 `shiftL` 40) .|.
+  (fromIntegral w4 `shiftL` 32) .|.
+  (fromIntegral w5 `shiftL` 24) .|.
+  (fromIntegral w6 `shiftL` 16) .|.
+  (fromIntegral w7 `shiftL`  8) .|.
+   fromIntegral w8
 
 bsToLower :: BS.ByteString -> BS.ByteString
 bsToLower = BS8.map toLower

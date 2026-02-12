@@ -14,34 +14,12 @@ import qualified Data.ByteString.Char8 as BS8
 import Control.Concurrent.STM (atomically, modifyTVar', TVar)
 import qualified Data.Map.Strict as M
 
-import Control.Monad (when)
 import Data.Bits
-import Data.Word
+
+import Control.Monad (when)
 
 import qualified Utilities as U
 import Types (SetExpiry (..), LengthEncoding (..), MemoryStore (..), MemoryStoreEntry (..), MemoryStoreValue (..), ExpireDuration (..), ExpireReference (..))
-
-twoBytesToInt :: Word8 -> Word8 -> Int
-twoBytesToInt hi lo =
-  fromIntegral ((fromIntegral hi :: Word16) `shiftL` 8 .|. fromIntegral lo)
-
-fourBytesToInt :: Word8 -> Word8 -> Word8 -> Word8 -> Int
-fourBytesToInt hi1 hi2 lo1 lo2 =
-  fromIntegral ((fromIntegral hi1 :: Word32) `shiftL` 24 .|.
-                (fromIntegral hi2 `shiftL` 16) .|.
-                (fromIntegral lo1 `shiftL` 8) .|.
-                fromIntegral lo2)
-
-eightBytesToInt :: Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Word8 -> Int
-eightBytesToInt w1 w2 w3 w4 w5 w6 w7 w8 =
-  (fromIntegral w1 `shiftL` 56) .|.
-  (fromIntegral w2 `shiftL` 48) .|.
-  (fromIntegral w3 `shiftL` 40) .|.
-  (fromIntegral w4 `shiftL` 32) .|.
-  (fromIntegral w5 `shiftL` 24) .|.
-  (fromIntegral w6 `shiftL` 16) .|.
-  (fromIntegral w7 `shiftL`  8) .|.
-   fromIntegral w8
 
 -- not for Integer strings, or compressed strings
 lengthEncoding :: Handle -> IO LengthEncoding
@@ -53,13 +31,13 @@ lengthEncoding h = do
     0 -> pure (SimpleString $ fromIntegral byte1)
     1 -> do
       lenc2 <- BS.hGet h 1
-      pure (SimpleString $ twoBytesToInt byte1 (BS.head lenc2))
+      pure (SimpleString $ U.twoBytesToInt byte1 (BS.head lenc2))
     2 -> do
       part1 <- BS.hGet h 1
       part2 <- BS.hGet h 1
       part3 <- BS.hGet h 1
       part4 <- BS.hGet h 1
-      pure (SimpleString $ fourBytesToInt (BS.head part1) (BS.head part2) (BS.head part3) (BS.head part4))
+      pure (SimpleString $ U.fourBytesToInt (BS.head part1) (BS.head part2) (BS.head part3) (BS.head part4))
     _ -> pure $ ComplexString $ fromIntegral (byte1 .&. 0x37)
 
 decodeString :: Handle -> IO (Maybe BS.ByteString)
@@ -79,13 +57,13 @@ decodeString h = do
            1 -> do
              num1c <- BS.hGet h 1
              num2c <- BS.hGet h 1
-             pure $ Just (BS8.pack . show $ twoBytesToInt (BS.head num1c) (BS.head num2c))
+             pure $ Just (BS8.pack . show $ U.twoBytesToInt (BS.head num1c) (BS.head num2c))
            2 -> do
              num1c <- BS.hGet h 1
              num2c <- BS.hGet h 1
              num3c <- BS.hGet h 1
              num4c <- BS.hGet h 1
-             pure $ Just (BS8.pack . show $ fourBytesToInt (BS.head num1c) (BS.head num2c) (BS.head num3c) (BS.head num4c))
+             pure $ Just (BS8.pack . show $ U.fourBytesToInt (BS.head num1c) (BS.head num2c) (BS.head num3c) (BS.head num4c))
            -- compressed string
            _ -> do
              clenP <- lengthEncoding h
@@ -169,7 +147,7 @@ consumeHashTable h store = do
       num2c <- BS.hGet h 1
       num3c <- BS.hGet h 1
       num4c <- BS.hGet h 1
-      pure $ fourBytesToInt (BS.head num4c) (BS.head num3c) (BS.head num2c) (BS.head num1c) * 1_000
+      pure $ U.fourBytesToInt (BS.head num4c) (BS.head num3c) (BS.head num2c) (BS.head num1c) * 1_000
     processMilliKey = do
       num1c <- BS.hGet h 1
       num2c <- BS.hGet h 1
@@ -179,7 +157,7 @@ consumeHashTable h store = do
       num6c <- BS.hGet h 1
       num7c <- BS.hGet h 1
       num8c <- BS.hGet h 1
-      pure $ eightBytesToInt (BS.head num8c) (BS.head num7c) (BS.head num6c) (BS.head num5c)  (BS.head num4c) (BS.head num3c) (BS.head num2c) (BS.head num1c)
+      pure $ U.eightBytesToInt (BS.head num8c) (BS.head num7c) (BS.head num6c) (BS.head num5c)  (BS.head num4c) (BS.head num3c) (BS.head num2c) (BS.head num1c)
     processKeyValue = do
       mKey <- decodeString h
       case mKey of
