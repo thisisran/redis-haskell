@@ -619,7 +619,12 @@ zremCommand name member = do
     Nothing    -> pure $ Right $ Response (encodeInteger 0) emptyResponse
 
 geoAddCommand :: BS.ByteString -> Double -> Double -> BS.ByteString  -> ClientApp (Either BS.ByteString Response)
-geoAddCommand name longtitude latitude member = pure $ Right $ Response (encodeInteger 1) emptyResponse
+geoAddCommand name longitude latitude member = do
+  if longitude >= 180 || longitude <= -180
+  then pure $ Right $ Response (encodeSimpleError "longitude should be between -180.0 and 180.0 degrees") emptyResponse
+  else if latitude >= 85.05112878 || latitude <= -85.05112878
+       then pure $ Right $ Response (encodeSimpleError "latitude should be between -85.05112878 and 85.05112878 degrees") emptyResponse
+       else pure $ Right $ Response (encodeInteger 1) emptyResponse
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
