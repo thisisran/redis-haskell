@@ -98,9 +98,15 @@ commandParser = do
     "ZCARD"       -> zcardParser n
     "ZSCORE"      -> zscoreParser n
     "ZREM"        -> zremParser n
+    "GEOADD"      -> geoAddParser n
     _           -> fail "unsupported command"
 -- ===== command implementations =====
 -- Note: n counts *all* array elements including the command name itself.
+
+geoAddParser :: Int -> A.Parser Command
+geoAddParser n = do
+  expectArity [5] n
+  GeoAdd <$> bulkStringParser <*> (bulkStringStartParser >> AC8.signed AC8.double <* crlf) <*> (bulkStringStartParser >> AC8.signed AC8.double <* crlf) <*> bulkStringParser
 
 zremParser :: Int -> A.Parser Command
 zremParser n = do

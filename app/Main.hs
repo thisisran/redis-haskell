@@ -617,7 +617,9 @@ zremCommand name member = do
                           pure $ Right $ Response (encodeInteger 1) emptyResponse
                         Nothing        -> pure $ Right $ Response (encodeInteger 0) emptyResponse
     Nothing    -> pure $ Right $ Response (encodeInteger 0) emptyResponse
-  
+
+geoAddCommand :: BS.ByteString -> Double -> Double -> BS.ByteString  -> ClientApp (Either BS.ByteString Response)
+geoAddCommand name longtitude latitude member = pure $ Right $ Response (encodeInteger 1) emptyResponse
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
@@ -739,6 +741,7 @@ handleConnection = go ""
                    (ZCard name) -> zcardCommand name
                    (ZScore name member) -> zscoreCommand name member
                    (ZRem name member) -> zremCommand name member
+                   (GeoAdd name longtitude latitude member) -> geoAddCommand name longtitude latitude member
                    Cmd  -> pure $ Right $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 case eitherResp of
                   Right (Response resp nextAction) -> liftIO (send sock resp) >> nextAction

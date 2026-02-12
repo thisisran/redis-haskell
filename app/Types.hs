@@ -153,6 +153,7 @@ data Command
   | ZCard !BS.ByteString
   | ZScore !BS.ByteString !BS.ByteString
   | ZRem !BS.ByteString !BS.ByteString
+  | GeoAdd !BS.ByteString Double Double !BS.ByteString
   | Cmd
   deriving (Show, Eq)
 
