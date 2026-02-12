@@ -260,6 +260,7 @@ data SharedEnv = SharedEnv
   , senvCompleteReplicaCount :: TVar Int
   , senvChannels             :: TVar (HM.HashMap BS.ByteString [Socket])
   , senvIsAuth               :: TVar Bool
+  , senvAuthUsers            :: TVar (HM.HashMap BS.ByteString BS.ByteString)
   }
 
 data ClientConfig = ClientConfig

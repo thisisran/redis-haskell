@@ -684,7 +684,8 @@ aclCommand opt =
     AclSetUser user password -> do
       UserData {flags = fl, passwords = ps} <- gets userData
       let newFlags = delete "nopass" fl
-      let newPasswords = (B16.encode . SHA256.hash) password : ps
+      let encryptedPass = (B16.encode . SHA256.hash) password
+      let newPasswords = encryptedPass : ps
 
       -- this client is now authcenticated
       modify' (\cs -> cs {isAuth = True})
@@ -693,21 +694,39 @@ aclCommand opt =
       tv <- asks $ senvIsAuth . cenvShared
       liftIO . atomically $
         modifyTVar' tv (const True)
-        
+      tvUserPass <- asks $ senvAuthUsers . cenvShared
+      liftIO . atomically $
+        modifyTVar' tvUserPass (HM.insert user encryptedPass)
+
       modify' (\cs -> cs { userData = UserData {name = user, passwords = newPasswords, flags = newFlags }})
       pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
 
 authCommand :: BS.ByteString -> BS.ByteString -> ClientApp (Either BS.ByteString Response)
 authCommand userName password = do
-  UserData {name = user, flags = fl, passwords = ps} <- gets userData
   let encodedPass = (B16.encode . SHA256.hash) password
-  if user == userName && elem encodedPass ps
-  then do
-    modify' (\cs -> cs {isAuth = True}) -- this client is now authcenticated
-    pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
-  else do
-    pure $ Right $ Response (encodeSimpleError "WRONGPASS" "invalid username-password pair or user is disabled.") emptyResponse
+  UserData {name = user, flags = fl, passwords = ps} <- gets userData
+  tvUserPass <- asks $ senvAuthUsers . cenvShared
+  userPassMap <- liftIO $ readTVarIO tvUserPass
+  tvServerAuth <- asks $ senvIsAuth . cenvShared
+  isServerAuth <- liftIO $ readTVarIO tvServerAuth
+  if isServerAuth then
+    case HM.lookup userName userPassMap of
+      Just serverPass ->
+        if serverPass == encodedPass
+        then do
+          let newPasswords = ps ++ [encodedPass]
+          modify' (\cs -> cs { isAuth = True, userData = UserData { name = user, flags = fl, passwords = newPasswords }})
 
+          pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
+        else pure $ Right $ Response (encodeSimpleError "WRONGPASS" "invalid username-password pair or user is disabled.") emptyResponse
+      Nothing -> pure $ Right $ Response (encodeSimpleError "ERR" "Server is authenticated but user not found.") emptyResponse
+  else do
+    if user == userName && elem encodedPass ps
+    then do
+      modify' (\cs -> cs {isAuth = True}) -- this client is now authcenticated
+      pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
+    else do
+      pure $ Right $ Response (encodeSimpleError "WRONGPASS" "invalid username-password pair or user is disabled.") emptyResponse
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
@@ -771,6 +790,9 @@ getCommandName cmd = case cmd of
                        ZRange {}   -> "ZRange"
                        ZCard {}    -> "ZCard"
 
+isAuthCommand :: Command -> ClientApp Bool
+isAuthCommand = \case Auth {} -> pure True; _ -> pure False
+
 handleConnection :: ClientApp ()
 handleConnection = go ""
   where
@@ -789,7 +811,8 @@ handleConnection = go ""
               tvServerAuth <- asks $ senvIsAuth . cenvShared
               isServerAuth <- liftIO $ readTVarIO tvServerAuth
               isUserAuth <- gets isAuth
-              if (isServerAuth && isUserAuth) || not isServerAuth then do
+              isAuthCommand <- isAuthCommand cmd
+              if (isServerAuth && (isUserAuth || isAuthCommand)) || not isServerAuth then do
                 subMode <- getSubscribed
                 if subMode then do
                    if approvedSubCommand cmd then execSubCommand cmd
@@ -996,6 +1019,7 @@ main = do
   complReplicas <- newTVarIO 0
   newChannels <- newTVarIO HM.empty
   newIsAuth <- newTVarIO False
+  newAuthUsers <- newTVarIO HM.empty
   
   let sharedEnv = SharedEnv { senvStore = store
                             , senvSets = newZSets
@@ -1004,7 +1028,8 @@ main = do
                             , senvReplicaSentOffset = sentOffset
                             , senvCompleteReplicaCount = complReplicas
                             , senvChannels = newChannels
-                            , senvIsAuth = newIsAuth}
+                            , senvIsAuth = newIsAuth
+                            , senvAuthUsers = newAuthUsers }
 
   newReplicaOffset <- newTVarIO 0
   let replicaEnv = ReplicaEnv sharedEnv newReplicaOffset
