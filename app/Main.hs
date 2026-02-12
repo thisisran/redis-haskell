@@ -603,6 +603,22 @@ zscoreCommand name member = do
     Just score -> pure $ Right $ Response (encodeBulkString (BS8.pack $ show score)) emptyResponse
     Nothing    -> pure $ Right (Response encodeNullBulkString emptyResponse)
 
+zremCommand :: BS.ByteString -> BS.ByteString  -> ClientApp (Either BS.ByteString Response)
+zremCommand name member = do
+  (ZSet scoreMap memberDict) <- getZSet name
+  case HM.lookup member memberDict of
+    Just score -> let updatedMemberDict = HM.delete member memberDict
+                  in case M.lookup score scoreMap of
+                        Just memberSet -> do
+                          let newMap = M.alter (Just . S.delete member . fromMaybe S.empty) score scoreMap
+                          tv <- getZSets
+                          liftIO . atomically $
+                            modifyTVar' tv $ HM.alter (Just . const (ZSet newMap updatedMemberDict) . fromMaybe (ZSet M.empty HM.empty)) name
+                          pure $ Right $ Response (encodeInteger 1) emptyResponse
+                        Nothing        -> pure $ Right $ Response (encodeInteger 0) emptyResponse
+    Nothing    -> pure $ Right $ Response (encodeInteger 0) emptyResponse
+  
+
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
                            Subscribe {}   -> True
@@ -722,6 +738,7 @@ handleConnection = go ""
                    (ZRange name start end) -> zrangeCommand name start end
                    (ZCard name) -> zcardCommand name
                    (ZScore name member) -> zscoreCommand name member
+                   (ZRem name member) -> zremCommand name member
                    Cmd  -> pure $ Right $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 case eitherResp of
                   Right (Response resp nextAction) -> liftIO (send sock resp) >> nextAction
