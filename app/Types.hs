@@ -154,6 +154,7 @@ data Command
   | ZScore !BS.ByteString !BS.ByteString
   | ZRem !BS.ByteString !BS.ByteString
   | GeoAdd !BS.ByteString Double Double !BS.ByteString
+  | GeoPos !BS.ByteString ![BS.ByteString]
   | Cmd
   deriving (Show, Eq)
 

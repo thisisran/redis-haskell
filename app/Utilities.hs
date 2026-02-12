@@ -96,10 +96,11 @@ compactInt64ToInt32 v0 =
       !f = (e  .|. (e  `shiftR` 16)) .&. 0x00000000FFFFFFFF
   in fromIntegral f
 
-deinterleaveGeo :: Word64 -> (Double, Double)
+deinterleaveGeo :: Double -> (Double, Double)
 deinterleaveGeo geo =
-  let !x = geo
-      !y = geo `shiftR` 1
+  let geoW = fromInteger (floor geo) :: Word64
+      !x = geoW
+      !y = geoW `shiftR` 1
       !gridLat = fromIntegral (compactInt64ToInt32 x) :: Double
       !gridLon = fromIntegral (compactInt64ToInt32 y) :: Double
       latMin = minLatitude  + latRange * (gridLat / scale26)

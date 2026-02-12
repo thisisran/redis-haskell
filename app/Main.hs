@@ -629,6 +629,20 @@ geoAddCommand name longitude latitude member = do
             Right (Response resp _) -> pure $ Right $ Response (encodeInteger 1) emptyResponse
             Left _                  -> pure $ Left "Error in GeoAdd Command"
 
+geoPosCommand :: BS.ByteString -> [BS.ByteString]  -> ClientApp (Either BS.ByteString Response)
+geoPosCommand name members = do
+  (ZSet _ memberDict) <- getZSet name
+  let values = map (`HM.lookup` memberDict) members
+  pure $ Right $ Response (encodeArray False (go values [])) emptyResponse
+  where
+    go :: [Maybe Double] -> [BS.ByteString] -> [BS.ByteString]
+    go [] acc = acc
+    go (x:xs) acc = do
+      case x of
+        Just score -> let (lat, long) = U.deinterleaveGeo score
+                      in go xs $ acc ++ [encodeArray True [(BS8.pack . show) long, (BS8.pack . show) lat]]
+        Nothing    -> go xs $ acc ++ [encodeNullArray]
+
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
                            Subscribe {}   -> True
@@ -750,6 +764,7 @@ handleConnection = go ""
                    (ZScore name member) -> zscoreCommand name member
                    (ZRem name member) -> zremCommand name member
                    (GeoAdd name longtitude latitude member) -> geoAddCommand name longtitude latitude member
+                   (GeoPos name member) -> geoPosCommand name member
                    Cmd  -> pure $ Right $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 case eitherResp of
                   Right (Response resp nextAction) -> liftIO (send sock resp) >> nextAction

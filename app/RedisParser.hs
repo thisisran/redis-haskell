@@ -99,9 +99,15 @@ commandParser = do
     "ZSCORE"      -> zscoreParser n
     "ZREM"        -> zremParser n
     "GEOADD"      -> geoAddParser n
+    "GEOPOS"      -> geoPosParser n
     _           -> fail "unsupported command"
--- ===== command implementations =====
+
 -- Note: n counts *all* array elements including the command name itself.
+
+geoPosParser :: Int -> A.Parser Command
+geoPosParser n = do
+  expectMinArity 3 n
+  GeoPos <$> bulkStringParser <*> countBulkStringParser (n-2)
 
 geoAddParser :: Int -> A.Parser Command
 geoAddParser n = do
