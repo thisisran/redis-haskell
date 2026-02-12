@@ -43,5 +43,5 @@ encodeArray encodeStr xs
   | null xs = encodeEmptyArray
   | otherwise = "*" <> (BS8.pack . show . length) xs <> "\r\n" <> foldr (\x acc -> let curr = if encodeStr then encodeBulkString x else x in curr <> acc) BS.empty xs
 
-encodeSimpleError :: BS.ByteString -> BS.ByteString
-encodeSimpleError x = "-ERR " <> x <> "\r\n"
+encodeSimpleError :: BS.ByteString -> BS.ByteString -> BS.ByteString
+encodeSimpleError prefix x = "-" <> prefix <> " " <> x <> "\r\n"

@@ -102,10 +102,16 @@ commandParser = do
     "GEOPOS"      -> geoPosParser n
     "GEODIST"     -> geoDistParser n
     "GEOSEARCH"   -> geoSearchParser n
+    "AUTH"        -> authParser n
     "ACL"         -> aclParser n
     _           -> fail "unsupported command"
 
 -- Note: n counts *all* array elements including the command name itself.
+
+authParser :: Int -> A.Parser Command
+authParser n = do
+  expectArity [3] n
+  Auth <$> bulkStringParser <*> bulkStringParser
 
 aclParser :: Int -> A.Parser Command
 aclParser n = do

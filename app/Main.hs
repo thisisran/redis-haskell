@@ -223,7 +223,7 @@ typeCommand key = do
     Just (MemoryStoreEntry (MSListVal _) _) -> pure $ Right $ Response (encodeSimpleString "list") emptyResponse
 
 xaddCommand :: MonadStore m => BS.ByteString -> EntryId -> RedisStreamValues -> m (Either BS.ByteString Response)
-xaddCommand streamID (EntryId 0 0) values = pure $ Right $ Response (encodeSimpleError "The ID specified in XADD must be greater than 0-0") emptyResponse
+xaddCommand streamID (EntryId 0 0) values = pure $ Right $ Response (encodeSimpleError "ERR" "The ID specified in XADD must be greater than 0-0") emptyResponse
 xaddCommand streamID EntryGenNew values = liftIO U.nowNs >>= \now -> xaddCommand streamID (EntryGenSeq (fromIntegral now)) values
 xaddCommand streamID (EntryGenSeq mili) values = do
   (filteredStream, _, _) <- getStream streamID (M.lookupMax . M.filterWithKey (\(EntryId m _) _ -> m == mili))
@@ -237,7 +237,7 @@ xaddCommand streamID entryID@(EntryId mili seq) values = do
     Nothing -> addNewEntry M.empty streams
     Just (x, _) ->
       if x >= entryID
-        then pure $ Right $ Response (encodeSimpleError "The ID specified in XADD is equal or smaller than the target stream top item") (updateReplicas replicaRep)
+        then pure $ Right $ Response (encodeSimpleError "ERR" "The ID specified in XADD is equal or smaller than the target stream top item") (updateReplicas replicaRep)
         else addNewEntry oldStream streams
   where
     addNewEntry :: MonadStore m => M.Map EntryId RedisStreamValues -> RedisStreams -> m (Either BS.ByteString Response)
@@ -289,12 +289,12 @@ xrangeCommand key (RangeMili mili) seq@(RangeEntryId seq1 seq2) = xrangeCommand 
 xrangeCommand key mili@(RangeEntryId _ _) (RangeMili seq) = do
   res <- xrangeEndHelper key (\(EntryId m _) _ -> m == seq)
   case res of
-    Nothing -> pure $ Right $ Response (encodeSimpleError "XRANGE: The end id does not exist") emptyResponse
+    Nothing -> pure $ Right $ Response (encodeSimpleError "ERR" "XRANGE: The end id does not exist") emptyResponse
     Just (RangeEntryId _ newEnd) -> xrangeCommand key mili (RangeEntryId seq newEnd)
 xrangeCommand key (RangeMili mili) (RangeMili seq) = do
   res <- xrangeEndHelper key (\(EntryId m _) _ -> m == seq)
   case res of
-    Nothing -> pure $ Right $ Response (encodeSimpleError "XRANGE: The end id does not exist") emptyResponse
+    Nothing -> pure $ Right $ Response (encodeSimpleError "ERR" "XRANGE: The end id does not exist") emptyResponse
     Just (RangeEntryId _ newEnd) -> xrangeCommand key (RangeEntryId mili 0) (RangeEntryId seq newEnd)
 xrangeCommand key mili@(RangeEntryId _ _) seq@(RangeEntryId _ _) = xrangeHelper key (<) mili seq
 
@@ -359,7 +359,7 @@ incrCommand key = do
       setDataEntry key (MemoryStoreEntry (MSStringVal "1") Nothing)
       pure $ Right $ Response (encodeInteger 1) (updateReplicas ["INCR", key])
     Just (MemoryStoreEntry (MSStringVal v) Nothing) -> case U.bsToInt v of
-      Nothing -> pure $ Right $ Response (encodeSimpleError "value is not an integer or out of range") emptyResponse
+      Nothing -> pure $ Right $ Response (encodeSimpleError "ERR" "value is not an integer or out of range") emptyResponse
       Just i -> do
         setDataEntry key (MemoryStoreEntry (MSStringVal $ (BS8.pack . show) (i + 1)) Nothing)
         pure $ Right $ Response (encodeInteger $ i + 1) (updateReplicas ["INCR", key])
@@ -377,7 +377,7 @@ execCommand = do
       ml <- getMultiList
       res <- go ml []
       pure $ Right $ Response (encodeArray False res) emptyResponse
-  else pure $ Right $ Response (encodeSimpleError "EXEC without MULTI") emptyResponse
+  else pure $ Right $ Response (encodeSimpleError "ERR" "EXEC without MULTI") emptyResponse
   where go :: [ClientApp (Either BS.ByteString Response)] -> [BS.ByteString] -> ClientApp [BS.ByteString]
         go [] acc = pure acc
         go (x:xs) acc = do
@@ -394,7 +394,7 @@ discardCommand = do
     updateMulti False
     resetMultiCommands
     pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
-  else pure $ Right $ Response (encodeSimpleError "DISCARD without MULTI") emptyResponse
+  else pure $ Right $ Response (encodeSimpleError "ERR" "DISCARD without MULTI") emptyResponse
 
 handleMultiCmd :: ClientApp (Either BS.ByteString Response) -> ClientApp (Either BS.ByteString Response)
 handleMultiCmd op = do
@@ -624,9 +624,9 @@ zremCommand name member = do
 geoAddCommand :: BS.ByteString -> Double -> Double -> BS.ByteString  -> ClientApp (Either BS.ByteString Response)
 geoAddCommand name longitude latitude member = do
   if longitude >= 180 || longitude <= -180
-  then pure $ Right $ Response (encodeSimpleError "longitude should be between -180.0 and 180.0 degrees") emptyResponse
+  then pure $ Right $ Response (encodeSimpleError "ERR" "longitude should be between -180.0 and 180.0 degrees") emptyResponse
   else if latitude >= 85.05112878 || latitude <= -85.05112878
-       then pure $ Right $ Response (encodeSimpleError "latitude should be between -85.05112878 and 85.05112878 degrees") emptyResponse
+       then pure $ Right $ Response (encodeSimpleError "ERR" "latitude should be between -85.05112878 and 85.05112878 degrees") emptyResponse
        else do
          zaddCommand name (U.interleaveGeo latitude longitude) member >>= \case
             Right (Response resp _) -> pure $ Right $ Response (encodeInteger 1) emptyResponse
@@ -657,7 +657,7 @@ geoDistCommand name member1 member2 = do
     pure $ U.calcGeoDistance (long1, lat1) (long2, lat2)
   case result of
     Just dist -> pure $ Right $ Response (encodeBulkString ((BS8.pack . show) dist)) emptyResponse
-    Nothing   -> pure $ Right $ Response (encodeSimpleError "GeoDist: one of the members does not exist") emptyResponse
+    Nothing   -> pure $ Right $ Response (encodeSimpleError "ERR" "GeoDist: one of the members does not exist") emptyResponse
 
 geoSearchCommand :: BS.ByteString -> Double -> Double -> Double -> DistUnit -> ClientApp (Either BS.ByteString Response)
 geoSearchCommand name longitude latitude radius unit = do
@@ -687,6 +687,14 @@ aclCommand opt =
       let newPasswords = (B16.encode . SHA256.hash) password : ps
       modify' (\cs -> cs { userData = UserData {name = user, passwords = newPasswords, flags = newFlags }})
       pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
+
+authCommand :: BS.ByteString -> BS.ByteString -> ClientApp (Either BS.ByteString Response)
+authCommand userName password = do
+  UserData {name = user, flags = fl, passwords = ps} <- gets userData
+  let encodedPass = (B16.encode . SHA256.hash) password
+  if user == userName && elem encodedPass ps
+  then pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
+  else pure $ Right $ Response (encodeSimpleError "WRONGPASS" "invalid username-password pair or user is disabled.") emptyResponse
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
@@ -771,7 +779,7 @@ handleConnection = go ""
                  then execSubCommand cmd
                  else do
                    let commandName = getCommandName cmd
-                   liftIO $ send sock $ encodeSimpleError ("Can't execute '" <> commandName <> "' when one or more subscriptions exist")
+                   liftIO $ send sock $ encodeSimpleError "ERR" ("Can't execute '" <> commandName <> "' when one or more subscriptions exist")
               else do
                 eitherResp <- case cmd of
                    Ping -> handleMultiCmd $ pure $ Right $ Response (encodeSimpleString "PONG") emptyResponse
@@ -812,6 +820,7 @@ handleConnection = go ""
                    (GeoPos name member) -> geoPosCommand name member
                    (GeoDist name member1 member2) -> geoDistCommand name member1 member2
                    (GeoSearch name longitude latitude radius unit) -> geoSearchCommand name longitude latitude radius unit
+                   (Auth userName password) -> authCommand userName password
                    (Acl opt) -> aclCommand opt
                    Cmd  -> pure $ Right $ Response encodeEmptyArray emptyResponse -- convenience command for running redis-cli in bulk mode
                 case eitherResp of

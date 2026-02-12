@@ -173,6 +173,7 @@ data Command
   | GeoDist !BS.ByteString !BS.ByteString !BS.ByteString
   | GeoSearch !BS.ByteString Double Double Double DistUnit
   | Acl AclSubCmd
+  | Auth !BS.ByteString !BS.ByteString
   | Cmd
   deriving (Show, Eq)
 
