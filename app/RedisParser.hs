@@ -101,9 +101,25 @@ commandParser = do
     "GEOADD"      -> geoAddParser n
     "GEOPOS"      -> geoPosParser n
     "GEODIST"     -> geoDistParser n
+    "GEOSEARCH"   -> geoSearchParser n
     _           -> fail "unsupported command"
 
 -- Note: n counts *all* array elements including the command name itself.
+
+geoSearchParser :: Int -> A.Parser Command
+geoSearchParser n = do
+  expectArity [8] n
+  key <- bulkStringParser
+  void bulkStringStartParser >> AC8.stringCI "FROMLONLAT" <* crlf
+  longitude <- void bulkStringStartParser >> AC8.double <* crlf
+  latitude <- void bulkStringStartParser >> AC8.double <* crlf
+  void bulkStringStartParser >> AC8.stringCI "BYRADIUS" <* crlf
+  radius <- void bulkStringStartParser >> AC8.double <* crlf
+  unit <- metersParser <|> kmParser <|> milesParser
+  pure $ GeoSearch key longitude latitude radius unit
+  where metersParser = (void bulkStringStartParser >> AC8.stringCI "m" <* crlf) >> pure DistMeter
+        kmParser = (void bulkStringStartParser >> AC8.stringCI "km" <* crlf) >> pure DistKilometer
+        milesParser = (void bulkStringStartParser >> AC8.stringCI "mi" <* crlf) >> pure DistMile
 
 geoDistParser :: Int -> A.Parser Command
 geoDistParser n = do

@@ -4,6 +4,7 @@
 module Types
   ( RParserResult (..)
   , Command (..)
+  , DistUnit (..)
   , StringParserResult (..)
   , TCPClientAckResult (..)
   , TCPReceivedResult (..)
@@ -119,6 +120,11 @@ data ConfigArgs = ConfigGetDir
                 | ConfigGetFileName
                 deriving stock (Eq, Show)
 
+data DistUnit = DistMeter
+              | DistKilometer
+              | DistMile
+              deriving stock (Eq, Show)
+
 data Command
   = Ping
   | Echo !BS.ByteString
@@ -156,6 +162,7 @@ data Command
   | GeoAdd !BS.ByteString Double Double !BS.ByteString
   | GeoPos !BS.ByteString ![BS.ByteString]
   | GeoDist !BS.ByteString !BS.ByteString !BS.ByteString
+  | GeoSearch !BS.ByteString Double Double Double DistUnit
   | Cmd
   deriving (Show, Eq)
 

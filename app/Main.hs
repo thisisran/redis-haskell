@@ -656,6 +656,17 @@ geoDistCommand name member1 member2 = do
     Just dist -> pure $ Right $ Response (encodeBulkString ((BS8.pack . show) dist)) emptyResponse
     Nothing   -> pure $ Right $ Response (encodeSimpleError "GeoDist: one of the members does not exist") emptyResponse
 
+geoSearchCommand :: BS.ByteString -> Double -> Double -> Double -> DistUnit -> ClientApp (Either BS.ByteString Response)
+geoSearchCommand name longitude latitude radius unit = do
+  (ZSet _ memberDict) <- getZSet name
+  let normRadius = case unit of
+                     DistKilometer -> radius * 1_000
+                     DistMile      -> radius * 1609.344
+                     _             -> radius
+  let membersInRange = HM.foldrWithKey' (\member score acc -> if calcDistance score longitude latitude <= normRadius then acc ++ [member] else acc) [] memberDict
+  pure $ Right $ Response (encodeArray True membersInRange) emptyResponse
+  where calcDistance score centerLong centerLat = let (lat1, long1) = U.deinterleaveGeo score
+                                                  in U.calcGeoDistance (long1, lat1) (centerLong, centerLat)
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
@@ -780,6 +791,7 @@ handleConnection = go ""
                    (GeoAdd name longtitude latitude member) -> geoAddCommand name longtitude latitude member
                    (GeoPos name member) -> geoPosCommand name member
                    (GeoDist name member1 member2) -> geoDistCommand name member1 member2
+                   (GeoSearch name longitude latitude radius unit) -> geoSearchCommand name longitude latitude radius unit
                    Cmd  -> pure $ Right $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 case eitherResp of
                   Right (Response resp nextAction) -> liftIO (send sock resp) >> nextAction
