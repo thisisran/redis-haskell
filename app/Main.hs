@@ -624,7 +624,10 @@ geoAddCommand name longitude latitude member = do
   then pure $ Right $ Response (encodeSimpleError "longitude should be between -180.0 and 180.0 degrees") emptyResponse
   else if latitude >= 85.05112878 || latitude <= -85.05112878
        then pure $ Right $ Response (encodeSimpleError "latitude should be between -85.05112878 and 85.05112878 degrees") emptyResponse
-       else pure $ Right $ Response (encodeInteger 1) emptyResponse
+       else do
+         zaddCommand name 0 member >>= \case
+            Right (Response resp _) -> pure $ Right $ Response (encodeInteger 1) emptyResponse
+            Left _                  -> pure $ Left "Error in GeoAdd Command"
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
