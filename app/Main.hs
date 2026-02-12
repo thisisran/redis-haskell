@@ -672,7 +672,7 @@ aclCommand :: AclSubCmd -> ClientApp (Either BS.ByteString Response)
 aclCommand opt =
   case opt of
     AclWhoAmI -> pure $ Right $ Response (encodeBulkString "default") emptyResponse
-    AclGetUser user -> pure $ Right $ Response (encodeArray False [encodeBulkString "flags", encodeEmptyArray]) emptyResponse
+    AclGetUser user -> pure $ Right $ Response (encodeArray False [encodeBulkString "flags", encodeArray True ["nopass"]]) emptyResponse
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
