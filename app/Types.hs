@@ -151,6 +151,7 @@ data Command
   | ZRank !BS.ByteString !BS.ByteString
   | ZRange !BS.ByteString !Int !Int
   | ZCard !BS.ByteString
+  | ZScore !BS.ByteString !BS.ByteString
   | Cmd
   deriving (Show, Eq)
 

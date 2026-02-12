@@ -596,6 +596,13 @@ zcardCommand name = do
   (ZSet scoreMap _) <- getZSet name
   pure $ Right $ Response (encodeInteger $ (sum . map S.size) $ M.elems scoreMap) emptyResponse
 
+zscoreCommand :: BS.ByteString -> BS.ByteString  -> ClientApp (Either BS.ByteString Response)
+zscoreCommand name member = do
+  (ZSet _ memberDict) <- getZSet name
+  case HM.lookup member memberDict of
+    Just score -> pure $ Right $ Response (encodeBulkString (BS8.pack $ show score)) emptyResponse
+    Nothing    -> pure $ Right (Response encodeNullBulkString emptyResponse)
+
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
                            Subscribe {}   -> True
@@ -658,8 +665,6 @@ getCommandName cmd = case cmd of
                        ZRange {}   -> "ZRange"
                        ZCard {}    -> "ZCard"
 
-                       
-
 handleConnection :: ClientApp ()
 handleConnection = go ""
   where
@@ -716,6 +721,7 @@ handleConnection = go ""
                    (ZRank name member) -> zrankCommand name member
                    (ZRange name start end) -> zrangeCommand name start end
                    (ZCard name) -> zcardCommand name
+                   (ZScore name member) -> zscoreCommand name member
                    Cmd  -> pure $ Right $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 case eitherResp of
                   Right (Response resp nextAction) -> liftIO (send sock resp) >> nextAction
@@ -762,20 +768,31 @@ awaitServerUpdates sock = go 0
           case parseOneCommand buf of
             RParsed cmd rest -> do
               let processedCount = BS.length buf - BS.length rest
-              let emStr = "" :: BS.ByteString
               case cmd of
-                Set key val args        -> setCommand key val args >>= \case Right (Response r _) -> pure $ Right (r, emStr); Left _ -> pure $ Left (BS8.pack "Err (Replica): Set command")
-                RPush key values        -> pushCommand key values RightPushCmd >>= \case Right (Response r _) -> pure $ Right (r, ""); Left _ -> pure $ Left "Err (Replica): RPush command"
-                LPush key values        -> pushCommand key values LeftPushCmd >>= \case Right (Response r _) -> pure $ Right (r, ""); Left _ -> pure $ Left "Err (Replica): LPush command"
-                LPop key count          -> applyLPopHelper key count >>= \case Right (Response r _) -> pure $ Right (r, ""); Left _ -> pure $ Left "Err (Replica): LPop command"
-                XAdd streamID entryID v -> xaddCommand streamID entryID v >>= \case Right (Response r _) -> pure $ Right (r, ""); Left _ -> pure $ Left "Err (Replica): XAdd command"
-                Incr key                -> incrCommand key >>= \case Right (Response r _) -> pure $ Right (r, ""); Left _ -> pure $ Left "Err (Replica): Incr command"
+                Set key val args        -> setCommand key val args >>= \case
+                  Right (Response r _) -> pure $ Right (r, "")
+                  Left _ -> pure $ Left (BS8.pack "Err (Replica): Set command")
+                RPush key values        -> pushCommand key values RightPushCmd >>= \case
+                  Right (Response r _) -> pure $ Right (r, "")
+                  Left _ -> pure $ Left "Err (Replica): RPush command"
+                LPush key values        -> pushCommand key values LeftPushCmd >>= \case
+                  Right (Response r _) -> pure $ Right (r, "")
+                  Left _ -> pure $ Left "Err (Replica): LPush command"
+                LPop key count          -> applyLPopHelper key count >>= \case
+                  Right (Response r _) -> pure $ Right (r, "")
+                  Left _ -> pure $ Left "Err (Replica): LPop command"
+                XAdd streamID entryID v -> xaddCommand streamID entryID v >>= \case
+                  Right (Response r _) -> pure $ Right (r, "")
+                  Left _ -> pure $ Left "Err (Replica): XAdd command"
+                Incr key                -> incrCommand key >>= \case
+                  Right (Response r _) -> pure $ Right (r, "")
+                  Left _ -> pure $ Left "Err (Replica): Incr command"
                 ReplConf GetAck         -> do
                   eitherResp <- getAckCommand
                   case eitherResp of
                     Right (resp, _) -> do
                       liftIO (send sock resp)
-                      pure $ Right (resp,"")
+                      pure $ Right (resp, "")
                     Left _          -> pure $ Left "Error (Replica): unknown command from the server"
                 _                       -> pure $ Left "Error (Replica): unknown command from the server"
               go (offset + processedCount) rest
