@@ -18,6 +18,7 @@ module Utilities
   , eightBytesToInt
   , interleaveGeo
   , deinterleaveGeo
+  , calcGeoDistance
   ) where
 
 import System.Random.Stateful (uniformRM, globalStdGen)
@@ -108,6 +109,24 @@ deinterleaveGeo geo =
       lonMin = minLongitude + lonRange * (gridLon / scale26)
       lonMax = minLongitude + lonRange * ((gridLon + 1) / scale26)
   in ((latMin + latMax) / 2, (lonMin + lonMax) / 2)
+
+degToRadius :: Double -> Double
+degToRadius x = let pi = 3.14159265358979323846
+                    degRadius = pi / 180.0
+                in x * degRadius
+
+calcGeoDistance :: (Double, Double) -> (Double, Double) -> Double
+calcGeoDistance (long1, lat1) (long2, lat2) = let earthRadius = 6372797.560856
+                                                  long1Radius = degToRadius long1
+                                                  long2Radius = degToRadius long2
+                                                  v           = sin ((long2Radius - long1Radius) / 2)
+                                                  lat1Radius  = degToRadius lat1
+                                                  lat2Radius  = degToRadius lat2
+                                                  u           = sin ((lat2Radius - lat1Radius) / 2)
+                                                  a           = u * u + cos lat1Radius * cos lat2Radius * v * v
+                                                  in if v == 0
+                                                     then abs (lat2Radius - lat1Radius) * earthRadius
+                                                     else 2.0 * earthRadius * asin (sqrt a)
 
 -------------------------------------------------------------------------------------------------
 

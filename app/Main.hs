@@ -643,6 +643,20 @@ geoPosCommand name members = do
                       in go xs $ acc ++ [encodeArray True [(BS8.pack . show) long, (BS8.pack . show) lat]]
         Nothing    -> go xs $ acc ++ [encodeNullArray]
 
+geoDistCommand :: BS.ByteString -> BS.ByteString -> BS.ByteString -> ClientApp (Either BS.ByteString Response)
+geoDistCommand name member1 member2 = do
+  (ZSet _ memberDict) <- getZSet name
+  result <- runMaybeT $ do
+    score1 <- MaybeT . pure $ HM.lookup member1 memberDict
+    score2 <- MaybeT . pure $ HM.lookup member2 memberDict
+    let (lat1, long1) = U.deinterleaveGeo score1
+    let (lat2, long2) = U.deinterleaveGeo score2
+    pure $ U.calcGeoDistance (long1, lat1) (long2, lat2)
+  case result of
+    Just dist -> pure $ Right $ Response (encodeBulkString ((BS8.pack . show) dist)) emptyResponse
+    Nothing   -> pure $ Right $ Response (encodeSimpleError "GeoDist: one of the members does not exist") emptyResponse
+
+
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
                            Subscribe {}   -> True
@@ -765,6 +779,7 @@ handleConnection = go ""
                    (ZRem name member) -> zremCommand name member
                    (GeoAdd name longtitude latitude member) -> geoAddCommand name longtitude latitude member
                    (GeoPos name member) -> geoPosCommand name member
+                   (GeoDist name member1 member2) -> geoDistCommand name member1 member2
                    Cmd  -> pure $ Right $ Response "*0\r\n" emptyResponse -- convenience command for running redis-cli in bulk mode
                 case eitherResp of
                   Right (Response resp nextAction) -> liftIO (send sock resp) >> nextAction
