@@ -110,8 +110,13 @@ commandParser = do
 aclParser :: Int -> A.Parser Command
 aclParser n = do
   expectMinArity 2 n
-  void bulkStringStartParser >> AC8.stringCI "WHOAMI" <* crlf
-  pure $ Acl AclWhoAmI
+  whoAmIParser <|> getUserParser
+  where whoAmIParser = do
+          void bulkStringStartParser >> AC8.stringCI "WHOAMI" <* crlf
+          pure $ Acl AclWhoAmI
+        getUserParser = do
+          void bulkStringStartParser >> AC8.stringCI "GETUSER" <* crlf
+          Acl . AclGetUser <$> bulkStringParser
 
 geoSearchParser :: Int -> A.Parser Command
 geoSearchParser n = do
@@ -212,7 +217,6 @@ configParser n = do
           bulkStringStartParser >> AC8.stringCI "dbfilename" >> crlf
           pure $ Config ConfigGetFileName
 
--- *3\r\n$4\r\nWAIT\r\n$1\r\n0\r\n$5\r\n60000\r\n
 waitParser :: Int -> A.Parser Command
 waitParser n = do
   expectArity [3] n

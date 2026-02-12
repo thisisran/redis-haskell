@@ -127,7 +127,8 @@ data DistUnit = DistMeter
               deriving stock (Eq, Show)
 
 data AclSubCmd = AclWhoAmI
-              deriving stock (Eq, Show)
+               | AclGetUser !BS.ByteString
+               deriving stock (Eq, Show)
 
 data Command
   = Ping
