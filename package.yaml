@@ -20,6 +20,8 @@ dependencies:
   - unordered-containers
   - random
   - unliftio
+  - cryptohash-sha256
+  - base16-bytestring
   # - hashable
   - time # may help with the expiry function
   - async # may help with concurrency

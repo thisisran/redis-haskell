@@ -18,15 +18,18 @@ import Control.Concurrent.STM
 import Control.Monad.IO.Class (liftIO, MonadIO)
 import Control.Monad (when, unless, void)
 
-import Control.Monad.State.Strict (gets)
+import Control.Monad.State.Strict (gets, modify')
 import Control.Monad.Reader (asks)
+
+import qualified Crypto.Hash.SHA256 as SHA256
+import qualified Data.ByteString.Base16 as B16
 
 import UnliftIO (MonadUnliftIO, withRunInIO)
 import qualified UnliftIO as UL
 
 import RDBParser
 
-import Data.List (foldl')
+import Data.List (foldl', delete)
 import Data.Word (Word64)
 import Data.Maybe (fromMaybe, isNothing, isJust)
 import Network.Simple.TCP (HostPreference (HostAny), Socket, closeSock, recv, send, serve, connect)
@@ -671,10 +674,19 @@ geoSearchCommand name longitude latitude radius unit = do
 aclCommand :: AclSubCmd -> ClientApp (Either BS.ByteString Response)
 aclCommand opt =
   case opt of
-    AclWhoAmI -> pure $ Right $ Response (encodeBulkString "default") emptyResponse
+    AclWhoAmI -> do
+      UserData {name = n} <- gets userData
+      pure $ Right $ Response (encodeBulkString n) emptyResponse
     AclGetUser user -> do
-      let response = [encodeBulkString "flags", encodeArray True ["nopass"], encodeBulkString "passwords", encodeEmptyArray]
+      UserData {flags = fl, passwords = ps} <- gets userData
+      let response = [encodeBulkString "flags", encodeArray True fl, encodeBulkString "passwords", encodeArray True ps]
       pure $ Right $ Response (encodeArray False response) emptyResponse
+    AclSetUser user password -> do
+      UserData {flags = fl, passwords = ps} <- gets userData
+      let newFlags = delete "nopass" fl
+      let newPasswords = (B16.encode . SHA256.hash) password : ps
+      modify' (\cs -> cs { userData = UserData {name = user, passwords = newPasswords, flags = newFlags }})
+      pure $ Right $ Response (encodeSimpleString "OK") emptyResponse
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
@@ -957,6 +969,7 @@ main = do
   sentOffset <- newTVarIO 0
   complReplicas <- newTVarIO 0
   newChannels <- newTVarIO HM.empty
+  
   let sharedEnv = SharedEnv store newZSets sharedCfg newReplicas sentOffset complReplicas newChannels
 
   newReplicaOffset <- newTVarIO 0
@@ -975,9 +988,12 @@ main = do
       writeTVar nextID (i + 1)
       pure i
 
-    let cs = ClientState {multi = False, multiList = [], subscribeMode = False, subscribeChannels = S.empty }
+    let newUserData = UserData "default" ["nopass"] []
+
+    let cs = ClientState {multi = False, multiList = [], subscribeMode = False, subscribeChannels = S.empty, userData = newUserData}
 
     let clientCfg = ClientConfig clientID socket sharedCfg
+
     let env = ClientEnv sharedEnv clientCfg
 
     runClientApp env cs handleConnection

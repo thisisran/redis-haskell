@@ -110,13 +110,20 @@ commandParser = do
 aclParser :: Int -> A.Parser Command
 aclParser n = do
   expectMinArity 2 n
-  whoAmIParser <|> getUserParser
+  whoAmIParser <|> getUserParser <|> setUserParser
   where whoAmIParser = do
           void bulkStringStartParser >> AC8.stringCI "WHOAMI" <* crlf
           pure $ Acl AclWhoAmI
         getUserParser = do
           void bulkStringStartParser >> AC8.stringCI "GETUSER" <* crlf
           Acl . AclGetUser <$> bulkStringParser
+        setUserParser = do
+          void bulkStringStartParser >> AC8.stringCI "SETUSER" <* crlf
+          user <- bulkStringParser
+          -- parse password
+          passLength <- bulkStringStartParser <* AC8.char '>'
+          password <- A.take (passLength-1) <* crlf
+          pure $ Acl (AclSetUser user password)
 
 geoSearchParser :: Int -> A.Parser Command
 geoSearchParser n = do
@@ -330,11 +337,9 @@ typeParser n = do
 crlf :: A.Parser BS.ByteString
 crlf = A.string "\r\n"
 
-bulkStringStartParser :: A.Parser BS.ByteString
+bulkStringStartParser :: A.Parser Int
 bulkStringStartParser = do
-  void (AC8.char '$')
-  void AC8.decimal
-  crlf
+  void (AC8.char '$') >> AC8.decimal <* crlf
 
 entryIdParser :: A.Parser EntryId
 entryIdParser = do

@@ -39,7 +39,9 @@ encodeEmptyArray :: BS.ByteString
 encodeEmptyArray = "*0\r\n"
 
 encodeArray :: Bool  -> [BS.ByteString] -> BS.ByteString
-encodeArray encodeStr xs = "*" <> (BS8.pack . show . length) xs <> "\r\n" <> foldr (\x acc -> let curr = if encodeStr then encodeBulkString x else x in curr <> acc) BS.empty xs
+encodeArray encodeStr xs
+  | null xs = encodeEmptyArray
+  | otherwise = "*" <> (BS8.pack . show . length) xs <> "\r\n" <> foldr (\x acc -> let curr = if encodeStr then encodeBulkString x else x in curr <> acc) BS.empty xs
 
 encodeSimpleError :: BS.ByteString -> BS.ByteString
 encodeSimpleError x = "-ERR " <> x <> "\r\n"

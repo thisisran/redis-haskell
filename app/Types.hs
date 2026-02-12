@@ -6,6 +6,9 @@ module Types
   , Command (..)
   , DistUnit (..)
   , AclSubCmd (..)
+  , UserFlags
+  , UserPasswords
+  , UserData (..)
   , StringParserResult (..)
   , TCPClientAckResult (..)
   , TCPReceivedResult (..)
@@ -128,6 +131,7 @@ data DistUnit = DistMeter
 
 data AclSubCmd = AclWhoAmI
                | AclGetUser !BS.ByteString
+               | AclSetUser !BS.ByteString !BS.ByteString
                deriving stock (Eq, Show)
 
 data Command
@@ -239,6 +243,13 @@ type ZSetScoreMap = (M.Map Double (S.Set BS.ByteString))
 data ZSet = ZSet ZSetScoreMap ZSetMemberDict
 type ZSets = TVar (HM.HashMap BS.ByteString ZSet)
 
+type UserFlags = [BS.ByteString]
+type UserPasswords = [BS.ByteString]
+data UserData = UserData { name :: !BS.ByteString
+                         , flags :: !UserFlags
+                         , passwords :: !UserPasswords }
+                         deriving stock (Eq, Show)
+
 data SharedEnv = SharedEnv
   { senvStore                :: !MemoryStore
   , senvSets                 :: !ZSets
@@ -266,10 +277,11 @@ data ClientEnv = ClientEnv
   }
 
 data ClientState = ClientState
-  { multi :: !Bool
-  , multiList :: [ClientApp (Either BS.ByteString Response)]
-  , subscribeMode :: !Bool
+  { multi             :: !Bool
+  , multiList         :: [ClientApp (Either BS.ByteString Response)]
+  , subscribeMode     :: !Bool
   , subscribeChannels :: !(S.Set BS.ByteString)
+  , userData          :: !UserData
   }
 
 data Response = Response
