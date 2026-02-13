@@ -10,6 +10,7 @@ module Types
   , UserPasswords
   , UserData (..)
   , StringParserResult (..)
+  , RespError (..)
   , TCPClientAckResult (..)
   , TCPReceivedResult (..)
   , ConfigArgs (..)
@@ -114,6 +115,21 @@ data StringParserResult = SParserFullString !BS.ByteString !BS.ByteString
                         | SParserPartialString
                         | SParserError !BS.ByteString
                         deriving stock (Eq, Show)
+
+data RespError = RErrXAddGtThan0
+               | RErrXaddEqSmallTargetItem
+               | RErrXRangeIDNonExisting
+               | RErrIncrNotIntegerOrRange
+               | RErrExecNoMulti
+               | RErrDiscardNoMulti
+               | RErrGeoAddLongRange
+               | RErrGeoAddLatRange
+               | RErrGeoDistMissingMember
+               | RErrAuthInvalidUserName
+               | RErrAuthServerAuthUserNotFound
+               | RErrAuthRequired
+               | RErrSubUnauthorizedCmd
+               deriving stock (Eq, Show)
 
 data TCPReceivedResult = TCPResultFull !BS.ByteString !BS.ByteString
                        | TCPResultError !BS.ByteString

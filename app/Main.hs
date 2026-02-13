@@ -209,7 +209,7 @@ typeCommand key = do
     Just (MemoryStoreEntry (MSListVal _) _) -> pure $ Right $ RspNormal (encodeSimpleString "list")
 
 xaddCommand :: (MonadStore m) => BS.ByteString -> EntryId -> RedisStreamValues -> m (Either BS.ByteString Response)
-xaddCommand streamID (EntryId 0 0) values = pure $ Right $ RspNormal (encodeSimpleError "ERR" "The ID specified in XADD must be greater than 0-0")
+xaddCommand streamID (EntryId 0 0) values = pure $ Right $ RspNormal (encodeSimpleError RErrXAddGtThan0 mempty)
 xaddCommand streamID EntryGenNew values = liftIO U.nowNs >>= \now -> xaddCommand streamID (EntryGenSeq (fromIntegral now)) values
 xaddCommand streamID (EntryGenSeq mili) values = do
   (filteredStream, _, _) <- getStream streamID (M.lookupMax . M.filterWithKey (\(EntryId m _) _ -> m == mili))
@@ -223,7 +223,7 @@ xaddCommand streamID entryID@(EntryId mili seq) values = do
     Nothing -> addNewEntry M.empty streams
     Just (x, _) ->
       if x >= entryID
-        then pure $ Right $ RspContinue (encodeSimpleError "ERR" "The ID specified in XADD is equal or smaller than the target stream top item") (updateReplicas replicaRep)
+        then pure $ Right $ RspContinue (encodeSimpleError RErrXaddEqSmallTargetItem mempty) (updateReplicas replicaRep)
         else addNewEntry oldStream streams
   where
     addNewEntry :: (MonadStore m) => M.Map EntryId RedisStreamValues -> RedisStreams -> m (Either BS.ByteString Response)
@@ -272,12 +272,12 @@ xrangeCommand key (RangeMili mili) seq@(RangeEntryId seq1 seq2) = xrangeCommand 
 xrangeCommand key mili@(RangeEntryId _ _) (RangeMili seq) = do
   res <- xrangeEndHelper key (\(EntryId m _) _ -> m == seq)
   case res of
-    Nothing -> pure $ Right $ RspNormal (encodeSimpleError "ERR" "XRANGE: The end id does not exist")
+    Nothing -> pure $ Right $ RspNormal (encodeSimpleError RErrXRangeIDNonExisting mempty)
     Just (RangeEntryId _ newEnd) -> xrangeCommand key mili (RangeEntryId seq newEnd)
 xrangeCommand key (RangeMili mili) (RangeMili seq) = do
   res <- xrangeEndHelper key (\(EntryId m _) _ -> m == seq)
   case res of
-    Nothing -> pure $ Right $ RspNormal (encodeSimpleError "ERR" "XRANGE: The end id does not exist")
+    Nothing -> pure $ Right $ RspNormal (encodeSimpleError RErrXRangeIDNonExisting mempty)
     Just (RangeEntryId _ newEnd) -> xrangeCommand key (RangeEntryId mili 0) (RangeEntryId seq newEnd)
 xrangeCommand key mili@(RangeEntryId _ _) seq@(RangeEntryId _ _) = xrangeHelper key (<) mili seq
 
@@ -343,7 +343,7 @@ incrCommand key = do
       setDataEntry key (MemoryStoreEntry (MSStringVal "1") Nothing)
       pure $ Right $ RspContinue (encodeInteger 1) (updateReplicas ["INCR", key])
     Just (MemoryStoreEntry (MSStringVal v) Nothing) -> case U.bsToInt v of
-      Nothing -> pure $ Right $ RspNormal (encodeSimpleError "ERR" "value is not an integer or out of range")
+      Nothing -> pure $ Right $ RspNormal (encodeSimpleError RErrIncrNotIntegerOrRange mempty)
       Just i -> do
         setDataEntry key (MemoryStoreEntry (MSStringVal $ (BS8.pack . show) (i + 1)) Nothing)
         pure $ Right $ RspContinue (encodeInteger $ i + 1) (updateReplicas ["INCR", key])
@@ -361,7 +361,7 @@ execCommand = do
           ml <- getMultiList
           res <- go ml []
           pure $ Right $ RspNormal (encodeArray False res)
-    else pure $ Right $ RspNormal (encodeSimpleError "ERR" "EXEC without MULTI")
+    else pure $ Right $ RspNormal (encodeSimpleError RErrExecNoMulti mempty)
   where go [] acc = pure acc
         go (x : xs) acc = do
            eitherResp <- x
@@ -378,7 +378,7 @@ discardCommand = do
       updateMulti False
       resetMultiCommands
       pure $ Right $ RspNormal (encodeSimpleString "OK")
-    else pure $ Right $ RspNormal (encodeSimpleError "ERR" "DISCARD without MULTI")
+    else pure $ Right $ RspNormal (encodeSimpleError RErrDiscardNoMulti mempty)
 
 handleMultiCmd :: ClientApp (Either BS.ByteString Response) -> ClientApp (Either BS.ByteString Response)
 handleMultiCmd op = do
@@ -614,10 +614,10 @@ zremCommand name member = do
 geoAddCommand :: BS.ByteString -> Double -> Double -> BS.ByteString -> ClientApp (Either BS.ByteString Response)
 geoAddCommand name longitude latitude member = do
   if longitude >= 180 || longitude <= -180
-    then pure $ Right $ RspNormal (encodeSimpleError "ERR" "longitude should be between -180.0 and 180.0 degrees")
+    then pure $ Right $ RspNormal (encodeSimpleError RErrGeoAddLongRange mempty)
     else
       if latitude >= 85.05112878 || latitude <= -85.05112878
-        then pure $ Right $ RspNormal (encodeSimpleError "ERR" "latitude should be between -85.05112878 and 85.05112878 degrees")
+        then pure $ Right $ RspNormal (encodeSimpleError RErrGeoAddLatRange mempty)
         else do
           zaddCommand name (U.interleaveGeo latitude longitude) member >>= \case
             Right (RspNormal resp) -> pure $ Right $ RspNormal (encodeInteger 1)
@@ -649,7 +649,7 @@ geoDistCommand name member1 member2 = do
     pure $ U.calcGeoDistance (long1, lat1) (long2, lat2)
   case result of
     Just dist -> pure $ Right $ RspNormal (encodeBulkString ((BS8.pack . show) dist)) 
-    Nothing -> pure $ Right $ RspNormal (encodeSimpleError "ERR" "GeoDist: one of the members does not exist") 
+    Nothing -> pure $ Right $ RspNormal (encodeSimpleError RErrGeoDistMissingMember mempty) 
 
 geoSearchCommand :: BS.ByteString -> Double -> Double -> Double -> DistUnit -> ClientApp (Either BS.ByteString Response)
 geoSearchCommand name longitude latitude radius unit = do
@@ -712,15 +712,15 @@ authCommand userName password = do
             modify' (\cs -> cs {isAuth = True, userData = UserData {name = user, flags = fl, passwords = newPasswords}})
 
             pure $ Right $ RspNormal (encodeSimpleString "OK") 
-          else pure $ Right $ RspNormal (encodeSimpleError "WRONGPASS" "invalid username-password pair or user is disabled.") 
-      Nothing -> pure $ Right $ RspNormal (encodeSimpleError "ERR" "Server is authenticated but user not found.") 
+          else pure $ Right $ RspNormal (encodeSimpleError RErrAuthInvalidUserName mempty) 
+      Nothing -> pure $ Right $ RspNormal (encodeSimpleError RErrAuthServerAuthUserNotFound mempty) 
     else do
       if user == userName && elem encodedPass ps
         then do
           modify' (\cs -> cs {isAuth = True}) -- this client is now authcenticated
           pure $ Right $ RspNormal (encodeSimpleString "OK") 
         else do
-          pure $ Right $ RspNormal (encodeSimpleError "WRONGPASS" "invalid username-password pair or user is disabled.") 
+          pure $ Right $ RspNormal (encodeSimpleError RErrAuthInvalidUserName mempty) 
 
 approvedSubCommand :: Command -> Bool
 approvedSubCommand cmd = case cmd of
@@ -788,7 +788,7 @@ isAuthCommand :: Command -> ClientApp Bool
 isAuthCommand = \case Auth {} -> pure True; _ -> pure False
 
 handleConnection :: ClientApp ()
-handleConnection = go ""
+handleConnection = go mempty
   where
     go acc = do
       sock <- getSocket
@@ -815,7 +815,7 @@ handleConnection = go ""
                         then execSubCommand cmd
                         else do
                           let commandName = getCommandName cmd
-                          liftIO $ send sock $ encodeSimpleError "ERR" ("Can't execute '" <> commandName <> "' when one or more subscriptions exist")
+                          liftIO $ send sock $ encodeSimpleError RErrSubUnauthorizedCmd  commandName
                     else do
                       eitherResp <- case cmd of
                         Ping -> handleMultiCmd $ pure $ Right $ RspNormal (encodeSimpleString "PONG") 
@@ -833,9 +833,7 @@ handleConnection = go ""
                         (XRange key start end) -> handleMultiCmd $ xrangeCommand key start end
                         (XRead keysIds timeout) -> handleMultiCmd $ xreadCommand keysIds timeout
                         (Incr key) -> handleMultiCmd $ incrCommand key
-                        Multi -> do
-                          updateMulti True
-                          pure $ Right $ RspNormal (encodeSimpleString "OK") 
+                        Multi -> updateMulti True >> pure (Right $ RspNormal (encodeSimpleString "OK"))
                         Exec -> execCommand
                         Discard -> discardCommand
                         (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
@@ -863,7 +861,7 @@ handleConnection = go ""
                         Right (RspNormal resp) -> liftIO (send sock resp)
                         Right (RspContinue resp nextAction) -> liftIO (send sock resp) >> nextAction
                         Left _ -> pure ()
-                else liftIO $ send sock (encodeSimpleError "NOAUTH" "Authentication required.")
+                else liftIO $ send sock (encodeSimpleError RErrAuthRequired mempty)
               go rest -- rest may already contain next command
             RParserErr e -> do
               liftIO $ send sock e
@@ -879,7 +877,7 @@ recvByParser parser sock = go
         SParserFullString str rest -> pure $ Right (str, rest)
         SParserPartialString ->
           recv sock 4096 >>= \case
-            Nothing -> pure $ Left "Received only partial response"
+            Nothing -> pure $ Left "Received only partial response from the (Master) server"
             Just chunk -> go (acc <> chunk)
         SParserError msg -> pure $ Left msg
 
@@ -965,7 +963,6 @@ runReplica = do
       _ <- UL.async $ connect host port $ \(_sock, _addr) ->
         -- runInIO :: ReplicaApp () -> IO ()
         runInIO $ do
-          -- ExceptT ByteString ClientApp (ByteString, ByteString)
           e <- runExceptT $ do
             liftIO $ send _sock (encodeArray True ["PING"])
 
@@ -993,9 +990,9 @@ runReplica = do
             pure resp
 
           case e of
-            Left err -> liftIO $ putStrLn ("replication failed: " <> show err)
+            Left err -> liftIO $ putStrLn ("(Replica) failed with: " <> show err)
             Right resp -> liftIO $ print resp
-      pure $ Right ("", "")
+      pure $ Right (mempty, mempty)
 
 ----------- Slave functions END
 
@@ -1003,9 +1000,6 @@ main :: IO ()
 main = do
   hSetBuffering stdout NoBuffering
   hSetBuffering stderr NoBuffering
-
-  -- You can use print statements as follows for debugging, they'll be visible when running tests.
-  -- hPutStrLn stderr "Logs from your program will appear here"
 
   cfgCli <- parseCli
   store <- newMemoryStore
@@ -1049,7 +1043,7 @@ main = do
 
   case sharedCfg of
     SharedConfig _ _ _ (Slave _ _) -> runReplicaApp replicaEnv runReplica
-    _ -> pure $ Right ("", "")
+    _ -> pure $ Right (mempty, mempty)
 
   putStrLn $ "Redis server listening on port " ++ port
   serve HostAny port $ \(socket, address) -> do
@@ -1082,6 +1076,5 @@ main = do
     readDBFile store h = do
       magicWord <- BS.hGet h 5
       redisVersion <- BS.hGet h 4
-      -- print $ "Header section: " <> magicWord <> " " <> redisVersion
       consumeMetadata h
       consumeDB h (msData store)
