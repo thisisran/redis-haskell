@@ -446,7 +446,6 @@ waitCommand reqReady timeout = do
   tvComplete <- asks (senvCompleteReplicaCount . cenvShared)
   liftIO . atomically $ modifyTVar' tvComplete (const 0)
 
-  -- liftIO $ hPutStrLn stderr ("SERVER OFFSET " <> show serverOffset)
   sendAcknowledgements serverOffset tvComplete replicas
   currOffset <- getReplicaSentOffset
   if currOffset > 0
@@ -462,7 +461,6 @@ waitCommand reqReady timeout = do
     countSoFarOp :: ClientApp (Either BS.ByteString Response)
     countSoFarOp = do
       result <- getCompleteReplicas
-      -- liftIO $ hPutStrLn stderr ("WAIT Timedout, returning " <> show result)
       updateServerSent
       pure $ Right $ RspNormal (encodeInteger result) (NotSubsCmd "WAIT")
     countFullOp :: ClientApp (Either BS.ByteString (Bool, Response))
@@ -470,7 +468,6 @@ waitCommand reqReady timeout = do
       result <- getCompleteReplicas
       if result >= reqReady
         then do
-          -- liftIO $ hPutStrLn stderr ("WAIT got enough requests, returning " <> show result)
           updateServerSent
           pure $ Right (False, RspNormal (encodeInteger result) (NotSubsCmd "WAIT"))
         else pure $ Right (True, RspNormal mempty (NotSubsCmd "WAIT"))
@@ -756,62 +753,61 @@ handleClientConnection :: ClientApp ()
 handleClientConnection = go mempty
   where
     go acc = do
-      sock <- getSocket
-      mb <- liftIO $ recv sock 4096
-      case mb of
-        Just buf -> do
-          case parseOneCommand buf of
-            RParserNeedMore -> go (acc <> buf)
-            RParsed cmd rest -> do
-              isAuth <- isAuthorizedCmd cmd
-              if isAuth then do
-                cmdResp <- case cmd of
-                  Ping -> handleMultiCmd $ pure $ Right $ RspNormal (encodeSimpleString "PONG") PingCmd
-                  (Echo str) -> handleMultiCmd $ pure $ Right $ RspNormal (encodeBulkString str) (NotSubsCmd "ECHO")
-                  (Set key val args) -> handleMultiCmd $ setCommand key val args
-                  (Get key) -> handleMultiCmd $ getCommand key
-                  (RPush key values) -> handleMultiCmd $ pushCommand key values RightPushCmd
-                  (LPush key values) -> handleMultiCmd $ pushCommand key values LeftPushCmd
-                  (LRange key start stop) -> handleMultiCmd $ lrangeCommand key start stop
-                  (LLen key) -> handleMultiCmd $ llenCommand key
-                  (LPop key count) -> handleMultiCmd $ lpopCommand key count
-                  (BLPop key timeout) -> getClientID >>= \clientID -> handleMultiCmd $ blpopCommand key timeout clientID
-                  (Type key) -> handleMultiCmd $ typeCommand key
-                  (XAdd streamID entryID values) -> handleMultiCmd $ xaddCommand streamID entryID values
-                  (XRange key start end) -> handleMultiCmd $ xrangeCommand key start end
-                  (XRead keysIds timeout) -> handleMultiCmd $ xreadCommand keysIds timeout
-                  (Incr key) -> handleMultiCmd $ incrCommand key
-                  Multi -> updateMulti True >> pure (Right $ RspNormal (encodeSimpleString "OK") (NotSubsCmd "MULTI"))
-                  Exec -> execCommand
-                  Discard -> discardCommand
-                  (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
-                  (ReplConf replOptions) -> replConfCommand replOptions
-                  (Psync req) -> psyncCommand req
-                  (Wait replicaNum timeout) -> waitCommand replicaNum timeout
-                  (Config opt) -> configCommand opt
-                  (Keys filter) -> keysCommand filter
-                  (Subscribe channel) -> subscribeCommand channel
-                  (Unsubscribe channel) -> unsubcribeCommand channel
-                  (Publish channel msg) -> publishCommand channel msg
-                  (ZAdd name score member) -> zaddCommand name score member
-                  (ZRank name member) -> zrankCommand name member
-                  (ZRange name start end) -> zrangeCommand name start end
-                  (ZCard name) -> zcardCommand name
-                  (ZScore name member) -> zscoreCommand name member
-                  (ZRem name member) -> zremCommand name member
-                  (GeoAdd name longtitude latitude member) -> geoAddCommand name longtitude latitude member
-                  (GeoPos name member) -> geoPosCommand name member
-                  (GeoDist name member1 member2) -> geoDistCommand name member1 member2
-                  (GeoSearch name longitude latitude radius unit) -> geoSearchCommand name longitude latitude radius unit
-                  (Auth userName password) -> authCommand userName password
-                  (Acl opt) -> aclCommand opt
-                  Cmd -> pure $ Right $ RspNormal encodeEmptyArray SubscribeCmd -- convenience command for running redis-cli in bulk mode
-                handleSubsMode cmdResp
-              else liftIO $ send sock (encodeSimpleError RErrAuthRequired mempty)
-              go rest -- rest may already contain next command
-            RParserErr e -> liftIO $ send sock e
-
-        Nothing -> pure () -- TODO: return an error here summarizing what happened, and handle it at main
+       sock <- getSocket
+       case parseOneCommand acc of
+         RParserNeedMore -> do
+           mb <- liftIO $ recv sock 4096
+           case mb of
+             Just buf -> go (acc <> buf)
+             Nothing -> pure ()  -- TODO: return an error here summarizing what happened, and handle it at main
+         RParsed cmd rest -> do
+           isAuth <- isAuthorizedCmd cmd
+           if isAuth then do
+             cmdResp <- case cmd of
+               Ping -> handleMultiCmd $ pure $ Right $ RspNormal (encodeSimpleString "PONG") PingCmd
+               (Echo str) -> handleMultiCmd $ pure $ Right $ RspNormal (encodeBulkString str) (NotSubsCmd "ECHO")
+               (Set key val args) -> handleMultiCmd $ setCommand key val args
+               (Get key) -> handleMultiCmd $ getCommand key
+               (RPush key values) -> handleMultiCmd $ pushCommand key values RightPushCmd
+               (LPush key values) -> handleMultiCmd $ pushCommand key values LeftPushCmd
+               (LRange key start stop) -> handleMultiCmd $ lrangeCommand key start stop
+               (LLen key) -> handleMultiCmd $ llenCommand key
+               (LPop key count) -> handleMultiCmd $ lpopCommand key count
+               (BLPop key timeout) -> getClientID >>= \clientID -> handleMultiCmd $ blpopCommand key timeout clientID
+               (Type key) -> handleMultiCmd $ typeCommand key
+               (XAdd streamID entryID values) -> handleMultiCmd $ xaddCommand streamID entryID values
+               (XRange key start end) -> handleMultiCmd $ xrangeCommand key start end
+               (XRead keysIds timeout) -> handleMultiCmd $ xreadCommand keysIds timeout
+               (Incr key) -> handleMultiCmd $ incrCommand key
+               Multi -> updateMulti True >> pure (Right $ RspNormal (encodeSimpleString "OK") (NotSubsCmd "MULTI"))
+               Exec -> execCommand
+               Discard -> discardCommand
+               (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
+               (ReplConf replOptions) -> replConfCommand replOptions
+               (Psync req) -> psyncCommand req
+               (Wait replicaNum timeout) -> waitCommand replicaNum timeout
+               (Config opt) -> configCommand opt
+               (Keys filter) -> keysCommand filter
+               (Subscribe channel) -> subscribeCommand channel
+               (Unsubscribe channel) -> unsubcribeCommand channel
+               (Publish channel msg) -> publishCommand channel msg
+               (ZAdd name score member) -> zaddCommand name score member
+               (ZRank name member) -> zrankCommand name member
+               (ZRange name start end) -> zrangeCommand name start end
+               (ZCard name) -> zcardCommand name
+               (ZScore name member) -> zscoreCommand name member
+               (ZRem name member) -> zremCommand name member
+               (GeoAdd name longtitude latitude member) -> geoAddCommand name longtitude latitude member
+               (GeoPos name member) -> geoPosCommand name member
+               (GeoDist name member1 member2) -> geoDistCommand name member1 member2
+               (GeoSearch name longitude latitude radius unit) -> geoSearchCommand name longitude latitude radius unit
+               (Auth userName password) -> authCommand userName password
+               (Acl opt) -> aclCommand opt
+               Cmd -> pure $ Right $ RspNormal encodeEmptyArray SubscribeCmd -- convenience command for running redis-cli in bulk mode
+             handleSubsMode cmdResp
+           else liftIO $ send sock (encodeSimpleError RErrAuthRequired mempty)
+           go rest -- rest may already contain next command
+         RParserErr e -> liftIO $ send sock e
 
 ---------------------------------------------------------------------------------------------------------
 -- Slave functions
@@ -840,64 +836,56 @@ getAckCommand = do
   pure $ Right (encodeArray True ["REPLCONF", "ACK", (BS8.pack . show) offset], "")
 
 awaitServerUpdates :: Socket -> BS.ByteString -> ReplicaApp (Either BS.ByteString (BS.ByteString, BS.ByteString))
-awaitServerUpdates sock = go 0
+awaitServerUpdates sock buf = go 0 buf
   where
     go :: Int -> BS.ByteString -> ReplicaApp (Either BS.ByteString (BS.ByteString, BS.ByteString))
-    go offset buffered = do
-      mb <- if BS.null buffered then liftIO (recv sock 4096) else pure (Just buffered)
-      case mb of
-        Nothing -> pure $ Left "Error (Replica): Connection might have been closed by the server"
-        Just buf -> do
-          setReplicaOffset offset
-          case parseOneCommand buf of
-            RParsed cmd rest -> do
-              let processedCount = BS.length buf - BS.length rest
-              case cmd of
-                Set key val args ->
-                  setCommand key val args >>= \case
-                    Right (RspNormal r _) -> pure $ Right (r, "")
-                    Right (RspContinue r _ _) -> pure $ Right (r, "")
-                    Left _ -> pure $ Left (BS8.pack "Err (Replica): Set command")
-                RPush key values ->
-                  pushCommand key values RightPushCmd >>= \case
-                    Right (RspNormal r _) -> pure $ Right (r, "")
-                    Right (RspContinue r _ _) -> pure $ Right (r, "")
-                    Left _ -> pure $ Left "Err (Replica): RPush command"
-                LPush key values ->
-                  pushCommand key values LeftPushCmd >>= \case
-                    Right (RspNormal r _) -> pure $ Right (r, "")
-                    Right (RspContinue r _ _) -> pure $ Right (r, "")
-                    Left _ -> pure $ Left "Err (Replica): LPush command"
-                LPop key count ->
-                  applyLPopHelper key count >>= \case
-                    Right (RspNormal r _) -> pure $ Right (r, "")
-                    Right (RspContinue r _ _) -> pure $ Right (r, "")
-                    Left _ -> pure $ Left "Err (Replica): LPop command"
-                XAdd streamID entryID v ->
-                  xaddCommand streamID entryID v >>= \case
-                    Right (RspNormal r _) -> pure $ Right (r, "")
-                    Right (RspContinue r _ _) -> pure $ Right (r, "")
-                    Left _ -> pure $ Left "Err (Replica): XAdd command"
-                Incr key ->
-                  incrCommand key >>= \case
-                    Right (RspNormal r _) -> pure $ Right (r, "")
-                    Right (RspContinue r _ _) -> pure $ Right (r, "")
-                    Left _ -> pure $ Left "Err (Replica): Incr command"
-                ReplConf GetAck -> do
-                  eitherResp <- getAckCommand
-                  case eitherResp of
-                    Right (resp, _) -> do
-                      liftIO (send sock resp)
-                      pure $ Right (resp, "")
-                    Left _ -> pure $ Left "Error (Replica): unknown command from the server"
-                _ -> pure $ Left "Error (Replica): unknown command from the server"
-              go (offset + processedCount) rest
-            RParserNeedMore -> do
-              mbMore <- liftIO $ recv sock 4096
-              case mbMore of
-                Nothing -> pure $ Left "Error (Replica): Incomplete command received and server seemed to have closed the connection"
-                Just more -> go offset (buf <> more)
-            RParserErr _ -> pure $ Left "Error (Replica): Command received from server coud not be parsed properly"
+    go offset acc = do
+     setReplicaOffset offset
+     case parseOneCommand acc of
+       RParsed cmd rest -> do
+         let processedCount = BS.length acc - BS.length rest
+         applied <- case cmd of
+           Ping ->
+             pure $ Right ()
+           Set key val args ->
+             setCommand key val args >>= \case
+               Right _ -> pure $ Right ()
+               Left _ -> pure $ Left (BS8.pack "Err (Replica): Set command")
+           RPush key values ->
+             pushCommand key values RightPushCmd >>= \case
+               Right _ -> pure $ Right ()
+               Left _ -> pure $ Left "Err (Replica): RPush command"
+           LPush key values ->
+             pushCommand key values LeftPushCmd >>= \case
+               Right _ -> pure $ Right ()
+               Left _ -> pure $ Left "Err (Replica): LPush command"
+           LPop key count ->
+             applyLPopHelper key count >>= \case
+               Right _ -> pure $ Right ()
+               Left _ -> pure $ Left "Err (Replica): LPop command"
+           XAdd streamID entryID v ->
+             xaddCommand streamID entryID v >>= \case
+               Right _ -> pure $ Right ()
+               Left _ -> pure $ Left "Err (Replica): XAdd command"
+           Incr key ->
+             incrCommand key >>= \case
+               Right _ -> pure $ Right ()
+               Left _ -> pure $ Left "Err (Replica): Incr command"
+           ReplConf GetAck -> do
+             eitherResp <- getAckCommand
+             case eitherResp of
+               Right (resp, _) -> liftIO (send sock resp) >> pure (Right ())
+               Left _ -> pure $ Left "Error (Replica): unknown command from the server"
+           _ -> pure $ Left "Error (Replica): unknown command from the server"
+         case applied of
+           Left err -> pure $ Left err
+           Right _ -> go (offset + processedCount) rest
+       RParserNeedMore -> do
+         mbMore <- liftIO $ recv sock 4096
+         case mbMore of
+           Nothing -> pure $ Left "Error (Replica): Incomplete command received and server seemed to have closed the connection"
+           Just more -> go offset (acc <> more)
+       RParserErr _ -> pure $ Left "Error (Replica): Command received from server coud not be parsed properly"
 
 runReplica :: ReplicaApp (Either BS.ByteString (BS.ByteString, BS.ByteString))
 runReplica = do

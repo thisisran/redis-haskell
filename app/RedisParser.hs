@@ -51,7 +51,9 @@ rdbFileParser :: A.Parser BS.ByteString
 rdbFileParser = do
   void (AC8.char '$')
   n <- AC8.decimal <* crlf
-  A.take n
+  payload <- A.take n
+  _ <- crlf <|> pure BS.empty
+  pure payload
 
 bulkStringParser :: A.Parser BS.ByteString
 bulkStringParser = do
@@ -505,15 +507,14 @@ replconfParser n = do
 psyncParser :: Int -> A.Parser Command
 psyncParser n = do
   expectArity [3] n
-  unknownParser <|> fullParser
-      where unknownParser = do
-              bulkStringStartParser <* AC8.char '?' <* crlf
-              pure $ Psync PSyncUnknown
-            fullParser = do
-              replID <- bulkStringParser
-              bulkStringStartParser
-              replOffset <- AC8.decimal <* crlf
-              pure $ Psync (PSyncFull replID replOffset)
+  replID <- bulkStringParser
+  replOffsetBs <- bulkStringParser
+  if replID == "?" && replOffsetBs == "-1"
+    then pure $ Psync PSyncUnknown
+    else case BS8.readInteger replOffsetBs of
+      Just (replOffset, rest) | BS.null rest && replOffset >= 0 ->
+        pure $ Psync (PSyncFull replID (fromIntegral replOffset))
+      _ -> fail "invalid PSYNC offset"
 
 expectArity :: [Int] -> Int -> A.Parser ()
 expectArity allowed n =
