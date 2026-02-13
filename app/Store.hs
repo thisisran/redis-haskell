@@ -1,4 +1,4 @@
-module MemoryStore
+module Store
   ( getSocket
   , getReplication
   , getClientReplication
@@ -66,12 +66,12 @@ import Network.Simple.TCP (Socket)
 import qualified Data.ByteString as BS
 
 class (Monad m, MonadIO m) => MonadStore m where
-  getData :: m (TVar (M.Map BS.ByteString MemoryStoreEntry))
-  setDataEntry :: BS.ByteString -> MemoryStoreEntry -> m ()
+  getData :: m (TVar (M.Map BS.ByteString StoreEntry))
+  setDataEntry :: BS.ByteString -> StoreEntry -> m ()
   setDataEntry key value = do
     tv <- getData
     liftIO . atomically $ modifyTVar' tv (M.insert key value)
-  getDataEntry :: BS.ByteString -> m (Maybe MemoryStoreEntry)
+  getDataEntry :: BS.ByteString -> m (Maybe StoreEntry)
   getDataEntry key = do
     tv <- getData
     liftIO $ M.lookup key <$> readTVarIO tv
@@ -85,9 +85,9 @@ class (Monad m, MonadIO m) => MonadStore m where
   getStreams = do
     streams <- getDataEntry "streams"
     pure $ case streams of
-      Just (MemoryStoreEntry (MSStreams s) Nothing) -> s
+      Just (StoreEntry (StoreStreams s) Nothing) -> s
       _ -> Streams HM.empty
-  setStreams :: MemoryStoreEntry -> m ()
+  setStreams :: StoreEntry -> m ()
   setStreams = setDataEntry "streams"
   getPort :: m String
   getReplication :: m ReplicationInfo
@@ -258,8 +258,8 @@ getClientReplication = asks $ (.cfgReplication) . ccfgShared . cenvConfig
 
 ---------
 
-newMemoryStore :: IO MemoryStore
-newMemoryStore = MemoryStore <$> newTVarIO M.empty <*> newTVarIO M.empty
+newMemoryStore :: IO Store
+newMemoryStore = Store <$> newTVarIO M.empty <*> newTVarIO M.empty
 
 ----------------------------------------------------------------------------------
 -- ClientState

@@ -19,7 +19,7 @@ import Data.Bits
 import Control.Monad (when)
 
 import qualified Utilities as U
-import Types (SetExpiry (..), LengthEncoding (..), MemoryStore (..), MemoryStoreEntry (..), MemoryStoreValue (..), ExpireDuration (..), ExpireReference (..))
+import Types (SetExpiry (..), LengthEncoding (..), Store (..), StoreEntry (..), StoreValue (..), ExDurationMs (..), ExRef (..))
 
 -- not for Integer strings, or compressed strings
 lengthEncoding :: Handle -> IO LengthEncoding
@@ -98,7 +98,7 @@ consumeMetadata h = do
             Just value -> print $ key <> ": " <> value
 
 -- consumes only 1 hash table
-consumeHashTable :: Handle -> TVar (M.Map BS.ByteString MemoryStoreEntry) -> IO ()
+consumeHashTable :: Handle -> TVar (M.Map BS.ByteString StoreEntry) -> IO ()
 consumeHashTable h store = do
   firstByte <- BS.hGet h 1
   let isHashTable = BS.head firstByte == 251
@@ -121,7 +121,7 @@ consumeHashTable h store = do
       fByte <- BS.hGet h 1
       when (BS.head fByte == 0) $ do -- currently only supporting string values
         (readKey, readValue) <- processKeyValue
-        let formattedValue = MemoryStoreEntry (MSStringVal readValue) Nothing
+        let formattedValue = StoreEntry (StoreString readValue) Nothing
         atomically $ modifyTVar' store (M.insert readKey formattedValue)
         -- print $ "Key: " <> readKey <> ", Value: " <> readValue
         processNormalKey $ count - 1
@@ -138,7 +138,7 @@ consumeHashTable h store = do
         print $ "Now: " <> show now
         let dur = max 0 (expiry - fromIntegral now)
         print $ "Expiry: " <> show expiry
-        let formattedValue = MemoryStoreEntry (MSStringVal readValue) (Just (ExpireDuration (fromIntegral dur), ExpireReference now))
+        let formattedValue = StoreEntry (StoreString readValue) (Just (ExDurationMs (fromIntegral dur), ExRef now))
         atomically $ modifyTVar' store (M.insert readKey formattedValue)
         -- print $ "Key: " <> readKey <> ", Value: " <> readValue <> ", Expiry: " <> (BS8.pack . show) expiry
       processExpiredKey $ count - 1
@@ -168,7 +168,7 @@ consumeHashTable h store = do
             _ -> pure ("","")
         _ -> pure ("","")
 
-consumeDB :: Handle -> TVar (M.Map BS.ByteString MemoryStoreEntry) -> IO ()
+consumeDB :: Handle -> TVar (M.Map BS.ByteString StoreEntry) -> IO ()
 consumeDB h store = do
   go True h
   where

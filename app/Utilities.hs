@@ -44,8 +44,8 @@ import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Base64.URL as B64URL
 import qualified Data.ByteString.Lazy as BSL
 
-import Types (EntryId (..), SetExpiry (..), MemoryStoreEntry (..), ExpireDuration (..),  ExpireReference (..), MemoryStoreValue (..))
-import MemoryStore (MonadStore, setDataEntry)
+import Types (EntryId (..), SetExpiry (..), StoreEntry (..), ExDurationMs (..),  ExRef (..), StoreValue (..))
+import Store (MonadStore, setDataEntry)
 
 import Data.Time.Clock.POSIX (getPOSIXTime)
 

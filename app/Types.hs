@@ -5,6 +5,7 @@ module Types
   ( RParserResult (..)
   , Command (..)
   , DistUnit (..)
+  , SubsCred (..)
   , AclSubCmd (..)
   , UserFlags
   , UserPasswords
@@ -23,11 +24,11 @@ module Types
   , PSyncRequest (..)
   , ReplicaApp
   , ClientApp
-  , ExpireDuration (..)
-  , ExpireReference (..)
-  , MemoryStoreValue (..)
-  , MemoryStoreEntry (..)
-  , MemoryStore (..)
+  , ExDurationMs (..)
+  , ExRef (..)
+  , StoreValue (..)
+  , StoreEntry (..)
+  , Store (..)
   , ClientState (..)
   , Response (..)
   , RedisStreamValues
@@ -213,22 +214,21 @@ type RedisStreamValues = [RedisStreamValue]
 type RedisStream = Stream RedisStreamValues
 type RedisStreams = Streams BS.ByteString RedisStreamValues
 
-newtype ExpireDuration = ExpireDuration Integer deriving (Eq, Show)  -- in miliseconds
-newtype ExpireReference = ExpireReference Integer deriving (Eq, Show)
+newtype ExDurationMs = ExDurationMs Integer deriving (Eq, Show)  -- in miliseconds
+newtype ExRef = ExRef Integer deriving (Eq, Show)
 
-data MemoryStoreValue = MSIntegerVal Integer
-                      | MSStringVal BS.ByteString
-                      | MSListVal [BS.ByteString]
-                      | MSStreams RedisStreams
-                      deriving (Eq, Show)
+data StoreValue = StoreString BS.ByteString
+                | StoreList [BS.ByteString]
+                | StoreStreams RedisStreams
+                deriving (Eq, Show)
 
-data MemoryStoreEntry = MemoryStoreEntry
-  { val :: MemoryStoreValue,
-    expiresAt :: Maybe (ExpireDuration, ExpireReference)
+data StoreEntry = StoreEntry
+  { val :: StoreValue,
+    expiresAt :: Maybe (ExDurationMs, ExRef)
   } deriving (Eq, Show)
 
-data MemoryStore = MemoryStore
-  { msData :: TVar (M.Map BS.ByteString MemoryStoreEntry)
+data Store = Store
+  { msData :: TVar (M.Map BS.ByteString StoreEntry)
   , msBLPopWaiters :: TVar (M.Map BS.ByteString IS.IntSet)
   }
 
@@ -267,7 +267,7 @@ data UserData = UserData { name :: !BS.ByteString
                          deriving stock (Eq, Show)
 
 data SharedEnv = SharedEnv
-  { senvStore                :: !MemoryStore
+  { senvStore                :: !Store
   , senvSets                 :: !ZSets
   , senvConfig               :: !SharedConfig
   , senvReplicas             :: TVar [Socket]
@@ -303,8 +303,13 @@ data ClientState = ClientState
   , isAuth            :: !Bool
   }
 
-data Response = RspNormal !BS.ByteString
-              | RspContinue { resp :: !BS.ByteString, afterOp :: ClientApp () }
+data SubsCred = NotSubsCmd !BS.ByteString
+              | SubscribeCmd
+              | PingCmd
+              deriving stock (Eq, Show)
+
+data Response = RspNormal !BS.ByteString SubsCred
+              | RspContinue { resp :: !BS.ByteString, afterOp :: ClientApp (), subsCred :: SubsCred }
 
 newtype ReplicaApp a = App { unReplicaApp :: ReaderT ReplicaEnv IO a }
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader ReplicaEnv, MonadUnliftIO)
@@ -312,8 +317,8 @@ newtype ReplicaApp a = App { unReplicaApp :: ReaderT ReplicaEnv IO a }
 newtype ClientApp a = ClientApp { unClientApp :: StateT ClientState (ReaderT ClientEnv IO) a }
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader ClientEnv, MonadState ClientState)
 
--- newtype App a = App { unApp :: StateT ClientState (ReaderT MemoryStore IO) a}
---   deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader MemoryStore)
+-- newtype App a = App { unApp :: StateT ClientState (ReaderT Store IO) a}
+--   deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader Store)
 
 runReplicaApp  :: ReplicaEnv -> ReplicaApp a -> IO a
 runReplicaApp env = (`runReaderT` env) . unReplicaApp
