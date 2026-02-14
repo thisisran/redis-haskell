@@ -191,6 +191,7 @@ execWithTimeout timeout timeoutOp otherOp = go 0
       | otherwise = do
           otherOp >>= \case
             Right (shouldContinue, response) -> if shouldContinue then do liftIO $ threadDelay 1_000; go $ elapsed + 0.001 else pure $ Right response
+            Left err -> pure $ Left err
 
 blpopCommand :: BS.ByteString -> Double -> Int -> ClientApp (Either BS.ByteString Response)
 blpopCommand key timeout clientID = do
