@@ -15,7 +15,7 @@ import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (gets, modify')
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
-import Control.Monad.Trans.Maybe (MaybeT (..), runMaybeT)
+import Control.Monad.Trans.Maybe (MaybeT (..), runMaybeT, hoistMaybe)
 import qualified Crypto.Hash.SHA256 as SHA256
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base16 as B16
@@ -145,42 +145,26 @@ llenCommand key = do
     Nothing -> pure $ Right $ RspNormal (encodeInteger 0) (NotSubsCmd "LLEN")
     Just (StoreEntry (StoreList v) Nothing) -> pure $ Right $ RspNormal (encodeInteger $ length v) (NotSubsCmd "LLEN")
 
-applyLPopHelper :: (MonadStore m) => BS.ByteString -> Int -> m (Either BS.ByteString Response)
-applyLPopHelper key count = do
-  tv <- getData
-  popResult <- liftIO . atomically $ do
-    curr <- readTVar tv
+applyLPopHelper :: TVar (M.Map BS.ByteString StoreEntry) -> BS.ByteString -> Int -> STM Response
+applyLPopHelper tvData key count = do
+    curr <- readTVar tvData
     case M.lookup key curr of
-      Nothing -> pure $ Right Nothing
+      Nothing -> pure $ RspNormal encodeNullBulkString (NotSubsCmd "LPOP")
       Just (StoreEntry (StoreList v) Nothing)
-        | null v -> pure $ Right Nothing
+        | null v -> pure $ RspNormal encodeNullBulkString (NotSubsCmd "LPOP")
         | otherwise -> do
             let normCount = min count (length v)
-            writeTVar tv (M.insert key (StoreEntry (StoreList (drop normCount v)) Nothing) curr)
-            pure $ Right (Just (normCount, v))
-      _ -> pure $ Left ()
-
-  case popResult of
-    Left () ->
-      pure $ Right $ RspNormal "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n" (NotSubsCmd "LPOP")
-    Right Nothing ->
-      pure $ Right $ RspContinue
-        { resp = encodeNullBulkString
-        , afterOp = updateReplicas ["LPOP", key, (BS8.pack . show) count]
-        , subsCred = NotSubsCmd "LPOP"
-        }
-    Right (Just (normCount, v)) ->
-      pure $ Right $ RspContinue
-        { resp = getPopped normCount v
-        , afterOp = updateReplicas ["LPOP", key, (BS8.pack . show) count]
-        , subsCred = NotSubsCmd "LPOP"
-        }
+            writeTVar tvData (M.insert key (StoreEntry (StoreList (drop normCount v)) Nothing) curr)
+            pure $ RspContinue { resp = getPopped normCount v, afterOp = updateReplicas ["LPOP", key, (BS8.pack . show) count], subsCred = NotSubsCmd "LPOP" }
+      _ -> pure $ RspNormal (encodeSimpleError RErrPopWrongValueType mempty) (NotSubsCmd "LPOP")
   where
     getPopped 1 (x : _) = encodeBulkString x
     getPopped popCount xs = encodeArray True (take popCount xs)
 
 lpopCommand :: BS.ByteString -> Int -> ClientApp (Either BS.ByteString Response)
-lpopCommand = applyLPopHelper
+lpopCommand key count = do
+  tv <- asks $ (.msData) . senvStore . cenvShared
+  (liftIO . atomically) (applyLPopHelper tv key count) >>= \resp -> pure $ Right resp
 
 execWithTimeout :: Double -> ClientApp (Either BS.ByteString Response) -> ClientApp (Either BS.ByteString (Bool, Response)) -> ClientApp (Either BS.ByteString Response)
 execWithTimeout timeout timeoutOp otherOp = go 0
@@ -193,37 +177,35 @@ execWithTimeout timeout timeoutOp otherOp = go 0
             Right (shouldContinue, response) -> if shouldContinue then do liftIO $ threadDelay 1_000; go $ elapsed + 0.001 else pure $ Right response
             Left err -> pure $ Left err
 
-blpopCommand :: BS.ByteString -> Double -> Int -> ClientApp (Either BS.ByteString Response)
-blpopCommand key timeout clientID = do
-  liftIO $ hPutStrLn stderr ("Starting BLPop with timeout: " <> show timeout)
-  execWithTimeout timeout noTimeOp mainOp
+awaitWithTimeout :: Int -> STM a -> IO (Maybe a)
+awaitWithTimeout timeoutMs waitAction
+  | timeoutMs == 0 = atomically (Just <$> waitAction)
+  | otherwise = do
+    fired <- registerDelay timeoutMs
+    atomically $ (Just <$> waitAction) `orElse` (readTVar fired >>= check >> pure Nothing)
   where
-    noTimeOp = pure $ Right $ RspNormal encodeNullArray (NotSubsCmd "BLPOP")
-    mainOp :: ClientApp (Either BS.ByteString (Bool, Response))
-    mainOp = do
-      val <- getDataEntry key
+    check True  = pure ()
+    check False = retry
+
+blpopCommand :: BS.ByteString -> Int -> Int -> ClientApp (Either BS.ByteString Response)
+blpopCommand key timeout clientID = do
+  tvStore <- asks $ (.msData) . senvStore . cenvShared
+  maybeSomething <- liftIO $ awaitWithTimeout timeout $ waitAction key clientID tvStore
+  case maybeSomething of
+    Nothing -> do
+      pure $ Right $ RspNormal encodeNullArray (NotSubsCmd "BLPOP")
+    Just (RspNormal resp _) -> pure $ Right $ RspNormal resp (NotSubsCmd "BLPOP")
+    Just (RspContinue resp afterOp _) -> pure $ Right $ RspContinue { resp = resp, afterOp = afterOp, subsCred = NotSubsCmd "BLPOP" }
+  where
+    waitAction :: BS.ByteString -> Int -> TVar (M.Map BS.ByteString StoreEntry) -> STM Response
+    waitAction key clientID tvStore = do
+      val <- M.lookup key <$> readTVar tvStore
       case val of
-        Nothing -> do
-          addWaiterOnce key clientID
-          pure $ Right (True, RspNormal mempty (NotSubsCmd "BLPOP"))
-        Just (StoreEntry (StoreList []) Nothing) -> do
-          addWaiterOnce key clientID
-          pure $ Right (True, RspNormal mempty (NotSubsCmd "BLPOP"))
-        Just (StoreEntry (StoreList (x : xs)) Nothing) -> do
-          waiters <- getWaiterEntry key
-          case waiters of
-            Nothing -> do
-              applyLPopHelper key 1 >>= \case
-                Right (RspContinue resp _ _) -> pure $ Right (False, RspNormal (encodeArray False [encodeBulkString key, resp]) (NotSubsCmd "BLPOP"))
-                Left _ -> pure $ Left "BLPop: An error has occurred"
-            Just waitersList -> do
-              if IS.member clientID waitersList
-                then do
-                  applyLPopHelper key 1 >>= \case
-                    Right (RspContinue resp _ _) -> delWaiterEntry key >> pure (Right (False, RspNormal (encodeArray False [encodeBulkString key, resp]) (NotSubsCmd "BLPOP")))
-                else do
-                  addWaiterOnce key clientID
-                  pure $ Right (True, RspNormal mempty $ NotSubsCmd "BLPOP")
+        Nothing -> retry
+        Just (StoreEntry (StoreList []) Nothing) -> retry
+        Just (StoreEntry (StoreList (x : xs)) Nothing) -> applyLPopHelper tvStore key 1 >>= \case
+          (RspContinue resp op _) -> pure $ RspContinue { resp = encodeArray False [encodeBulkString key, resp], afterOp = op, subsCred = NotSubsCmd "BLPOP" }
+          (RspNormal resp _) -> pure $ RspNormal resp (NotSubsCmd "BLPOP")
 
 typeCommand :: BS.ByteString -> ClientApp (Either BS.ByteString Response)
 typeCommand key = do
@@ -592,11 +574,11 @@ zrankCommand :: BS.ByteString -> BS.ByteString -> ClientApp (Either BS.ByteStrin
 zrankCommand name member = do
   (ZSet scoreMap memberDict) <- getZSet name
   maybeVal <- runMaybeT $ do
-    score <- MaybeT . pure $ HM.lookup member memberDict
+    score <- hoistMaybe $ HM.lookup member memberDict
     let precedingSets = M.elems (fst (M.split score scoreMap))
     let precedingCount = (sum . map S.size) precedingSets
-    memberSet <- MaybeT . pure $ M.lookup score scoreMap
-    rank <- MaybeT . pure $ S.lookupIndex member memberSet
+    memberSet <- hoistMaybe $ M.lookup score scoreMap
+    rank <- hoistMaybe $ S.lookupIndex member memberSet
     pure $ RspNormal (encodeInteger (precedingCount + rank)) (NotSubsCmd "ZRANK")
   case maybeVal of
     Just result -> pure $ Right result
@@ -681,8 +663,8 @@ geoDistCommand :: BS.ByteString -> BS.ByteString -> BS.ByteString -> ClientApp (
 geoDistCommand name member1 member2 = do
   (ZSet _ memberDict) <- getZSet name
   result <- runMaybeT $ do
-    score1 <- MaybeT . pure $ HM.lookup member1 memberDict
-    score2 <- MaybeT . pure $ HM.lookup member2 memberDict
+    score1 <- hoistMaybe $ HM.lookup member1 memberDict
+    score2 <- hoistMaybe $ HM.lookup member2 memberDict
     let (lat1, long1) = U.deinterleaveGeo score1
     let (lat2, long2) = U.deinterleaveGeo score2
     pure $ U.calcGeoDistance (long1, lat1) (long2, lat2)
@@ -720,15 +702,14 @@ aclCommand opt =
       let encryptedPass = (B16.encode . SHA256.hash) password
       let newPasswords = encryptedPass : ps
 
-      -- this client is now authcenticated
+      -- this client is now authenticated
       modify' (\cs -> cs {isAuth = True})
 
-      -- Update this server now requires authentication
+      -- Update that this server now requires authentication
       tv <- asks $ senvIsAuth . cenvShared
-      liftIO . atomically $
-        modifyTVar' tv (const True)
       tvUserPass <- asks $ senvAuthUsers . cenvShared
-      liftIO . atomically $
+      liftIO . atomically $ do
+        modifyTVar' tv (const True)
         modifyTVar' tvUserPass (HM.insert user encryptedPass)
 
       modify' (\cs -> cs {userData = UserData {name = user, passwords = newPasswords, flags = newFlags}})
@@ -818,7 +799,7 @@ handleClientConnection = go mempty
                (LRange key start stop) -> handleMultiCmd $ lrangeCommand key start stop
                (LLen key) -> handleMultiCmd $ llenCommand key
                (LPop key count) -> handleMultiCmd $ lpopCommand key count
-               (BLPop key timeout) -> getClientID >>= \clientID -> handleMultiCmd $ blpopCommand key timeout clientID
+               (BLPop key timeout) -> getClientID >>= \clientID -> handleMultiCmd $ blpopCommand key (round (timeout * 1_000_000)) clientID
                (Type key) -> handleMultiCmd $ typeCommand key
                (XAdd streamID entryID values) -> handleMultiCmd $ xaddCommand streamID entryID values
                (XRange key start end) -> handleMultiCmd $ xrangeCommand key start end
@@ -881,7 +862,7 @@ getAckCommand = do
   pure $ Right (encodeArray True ["REPLCONF", "ACK", (BS8.pack . show) offset], "")
 
 awaitServerUpdates :: Socket -> BS.ByteString -> ReplicaApp (Either BS.ByteString (BS.ByteString, BS.ByteString))
-awaitServerUpdates sock buf = go 0 buf
+awaitServerUpdates sock = go 0
   where
     go :: Int -> BS.ByteString -> ReplicaApp (Either BS.ByteString (BS.ByteString, BS.ByteString))
     go offset acc = do
@@ -890,10 +871,8 @@ awaitServerUpdates sock buf = go 0 buf
        RParsed cmd rest -> do
          let processedCount = BS.length acc - BS.length rest
          applied <- case cmd of
-           Ping ->
-             pure $ Right ()
-           Set key val args ->
-             setCommand key val args >>= \case
+           Ping -> pure $ Right ()
+           Set key val args -> setCommand key val args >>= \case
                Right _ -> pure $ Right ()
                Left _ -> pure $ Left (BS8.pack "Err (Replica): Set command")
            RPush key values ->
@@ -904,10 +883,10 @@ awaitServerUpdates sock buf = go 0 buf
              pushCommand key values LeftPushCmd >>= \case
                Right _ -> pure $ Right ()
                Left _ -> pure $ Left "Err (Replica): LPush command"
-           LPop key count ->
-             applyLPopHelper key count >>= \case
-               Right _ -> pure $ Right ()
-               Left _ -> pure $ Left "Err (Replica): LPop command"
+           LPop key count -> do
+             tvStore  <- asks $ (.msData) . senvStore . renvShared
+             liftIO . atomically $ applyLPopHelper tvStore key count
+             pure $ Right ()
            XAdd streamID entryID v ->
              xaddCommand streamID entryID v >>= \case
                Right _ -> pure $ Right ()
