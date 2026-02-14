@@ -217,19 +217,19 @@ xaddCommand streamID entryID@(EntryId mili seq) values = do
   (filteredStream, Stream oldStream, streams) <- getStream streamID (M.lookupMax . M.filterWithKey (\_ _ -> True))
   let replicaRep = ["XADD", streamID, U.entryIdToBS entryID] ++ valuesToArray values []
   case filteredStream of
-    Nothing -> addNewEntry M.empty streams
+    Nothing -> addNewEntry M.empty streams replicaRep
     Just (x, _) ->
       if x >= entryID
-        then pure $ Right $ RspContinue { resp = encodeSimpleError RErrXaddEqSmallTargetItem mempty, afterOp = updateReplicas replicaRep, subsCred = NotSubsCmd "XADD" }
-        else addNewEntry oldStream streams
+        then pure $ Right $ RspNormal (encodeSimpleError RErrXaddEqSmallTargetItem mempty) (NotSubsCmd "XADD")
+        else addNewEntry oldStream streams replicaRep
   where
-    addNewEntry :: (MonadStore m) => M.Map EntryId RedisStreamValues -> RedisStreams -> m (Either BS.ByteString Response)
-    addNewEntry oldStream (Streams streams) = do
+    addNewEntry :: (MonadStore m) => M.Map EntryId RedisStreamValues -> RedisStreams -> [BS.ByteString] -> m (Either BS.ByteString Response)
+    addNewEntry oldStream (Streams streams) replicaRep = do
       let newEntry = values
       let newStream = Stream (M.insert entryID newEntry oldStream)
       let newStreams = HM.insert streamID newStream streams
       setStreams (StoreEntry (StoreStreams (Streams newStreams)) Nothing)
-      pure $ Right $ RspNormal (encodeBulkString (U.entryIdToBS entryID)) (NotSubsCmd "XADD")
+      pure $ Right $ RspContinue { resp = encodeBulkString (U.entryIdToBS entryID), afterOp = updateReplicas replicaRep, subsCred = NotSubsCmd "XADD" }
     valuesToArray [] acc = acc
     valuesToArray ((key, value) : xs) acc = valuesToArray xs (acc ++ [key, value])
 
