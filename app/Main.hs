@@ -400,8 +400,8 @@ execCommand = do
       if null ml
         then pure $ Right $ RspNormal (encodeArray True []) (NotSubsCmd "EXEC")
         else do
-          ml <- getMultiList
           res <- go ml []
+          resetMultiCommands
           pure $ Right $ RspNormal (encodeArray False res) (NotSubsCmd "EXEC")
     else pure $ Right $ RspNormal (encodeSimpleError RErrExecNoMulti mempty) (NotSubsCmd "EXEC")
   where go [] acc = pure acc
