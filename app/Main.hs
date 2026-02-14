@@ -87,16 +87,30 @@ getCommand key = do
 
 pushCommand :: (MonadStore m) => BS.ByteString -> [BS.ByteString] -> PushCommand -> m (Either BS.ByteString Response)
 pushCommand key values pushType = do
-  val <- getDataEntry key
+  tv <- getData
   let valuesCount = length values
   let pushArgs = if pushType == RightPushCmd then "RPUSH" else "LPUSH"
-  case val of
-    Nothing -> do
-      setDataEntry key (StoreEntry (StoreList $ newItems pushType) Nothing)
-      pure $ Right $ RspContinue { resp = encodeInteger valuesCount, afterOp = updateReplicas $ [pushArgs, key] ++ values, subsCred = NotSubsCmd pushArgs }
-    Just (StoreEntry (StoreList vs) Nothing) -> do
-      setDataEntry key (StoreEntry (StoreList $ newList pushType vs) Nothing)
-      pure $ Right $ RspContinue { resp = encodeInteger (length vs + valuesCount), afterOp = updateReplicas $ [pushArgs, key] ++ values, subsCred = NotSubsCmd pushArgs }
+  pushResult <- liftIO . atomically $ do
+    curr <- readTVar tv
+    case M.lookup key curr of
+      Nothing -> do
+        writeTVar tv (M.insert key (StoreEntry (StoreList $ newItems pushType) Nothing) curr)
+        pure $ Right valuesCount
+      Just (StoreEntry (StoreList vs) Nothing) -> do
+        let newLen = length vs + valuesCount
+        writeTVar tv (M.insert key (StoreEntry (StoreList $ newList pushType vs) Nothing) curr)
+        pure $ Right newLen
+      _ -> pure $ Left ()
+
+  case pushResult of
+    Left () ->
+      pure $ Right $ RspNormal "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n" (NotSubsCmd pushArgs)
+    Right newLen ->
+      pure $ Right $ RspContinue
+        { resp = encodeInteger newLen
+        , afterOp = updateReplicas $ [pushArgs, key] ++ values
+        , subsCred = NotSubsCmd pushArgs
+        }
   where newItems RightPushCmd = values
         newItems LeftPushCmd = reverse values
         newList RightPushCmd oldList = oldList ++ values
@@ -133,20 +147,37 @@ llenCommand key = do
 
 applyLPopHelper :: (MonadStore m) => BS.ByteString -> Int -> m (Either BS.ByteString Response)
 applyLPopHelper key count = do
-  val <- getDataEntry key
-  case val of
-    Nothing -> pure $ Right $ RspContinue { resp = encodeNullBulkString, afterOp = updateReplicas ["LPOP", key, (BS8.pack . show) count], subsCred = NotSubsCmd "LPOP" }
-    Just (StoreEntry (StoreList v) Nothing) ->
-      let normCount = min count $ length v
-       in go v normCount
-      where
-        go [] _ = pure $ Right $ RspContinue { resp = encodeNullBulkString, afterOp = updateReplicas ["LPOP", key, (BS8.pack . show) count], subsCred = NotSubsCmd "LPOP" }
-        go xs c = do
-          setDataEntry key (StoreEntry (StoreList (drop c xs)) Nothing)
-          pure $ Right $ RspContinue { resp = getPopped c v, afterOp = updateReplicas ["LPOP", key, (BS8.pack . show) count], subsCred = NotSubsCmd "LPOP" }
-          where
-            getPopped 1 (x : _) = encodeBulkString x
-            getPopped popCount xs = encodeArray True (take popCount xs)
+  tv <- getData
+  popResult <- liftIO . atomically $ do
+    curr <- readTVar tv
+    case M.lookup key curr of
+      Nothing -> pure $ Right Nothing
+      Just (StoreEntry (StoreList v) Nothing)
+        | null v -> pure $ Right Nothing
+        | otherwise -> do
+            let normCount = min count (length v)
+            writeTVar tv (M.insert key (StoreEntry (StoreList (drop normCount v)) Nothing) curr)
+            pure $ Right (Just (normCount, v))
+      _ -> pure $ Left ()
+
+  case popResult of
+    Left () ->
+      pure $ Right $ RspNormal "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n" (NotSubsCmd "LPOP")
+    Right Nothing ->
+      pure $ Right $ RspContinue
+        { resp = encodeNullBulkString
+        , afterOp = updateReplicas ["LPOP", key, (BS8.pack . show) count]
+        , subsCred = NotSubsCmd "LPOP"
+        }
+    Right (Just (normCount, v)) ->
+      pure $ Right $ RspContinue
+        { resp = getPopped normCount v
+        , afterOp = updateReplicas ["LPOP", key, (BS8.pack . show) count]
+        , subsCred = NotSubsCmd "LPOP"
+        }
+  where
+    getPopped 1 (x : _) = encodeBulkString x
+    getPopped popCount xs = encodeArray True (take popCount xs)
 
 lpopCommand :: BS.ByteString -> Int -> ClientApp (Either BS.ByteString Response)
 lpopCommand = applyLPopHelper
@@ -334,16 +365,29 @@ xreadCommand keysIds Nothing = do
 
 incrCommand :: (MonadStore m) => BS.ByteString -> m (Either BS.ByteString Response)
 incrCommand key = do
-  val <- getDataEntry key
-  case val of
-    Nothing -> do
-      setDataEntry key (StoreEntry (StoreString "1") Nothing)
-      pure $ Right $ RspContinue (encodeInteger 1) (updateReplicas ["INCR", key]) (NotSubsCmd "INCR")
-    Just (StoreEntry (StoreString v) Nothing) -> case U.bsToInt v of
-      Nothing -> pure $ Right $ RspNormal (encodeSimpleError RErrIncrNotIntegerOrRange mempty) (NotSubsCmd "INCR")
-      Just i -> do
-        setDataEntry key (StoreEntry (StoreString $ (BS8.pack . show) (i + 1)) Nothing)
-        pure $ Right $ RspContinue { resp = encodeInteger $ i + 1, afterOp = updateReplicas ["INCR", key], subsCred = NotSubsCmd "INCR" }
+  tv <- getData
+  incrResult <- liftIO . atomically $ do
+    curr <- readTVar tv
+    case M.lookup key curr of
+      Nothing -> do
+        let nextVal = 1
+        writeTVar tv (M.insert key (StoreEntry (StoreString "1") Nothing) curr)
+        pure $ Right nextVal
+      Just (StoreEntry (StoreString v) Nothing) -> case U.bsToInt v of
+        Nothing -> pure $ Left ()
+        Just i -> do
+          let nextVal = i + 1
+          writeTVar tv (M.insert key (StoreEntry (StoreString $ BS8.pack $ show nextVal) Nothing) curr)
+          pure $ Right nextVal
+      _ -> pure $ Left ()
+
+  case incrResult of
+    Left () -> pure $ Right $ RspNormal (encodeSimpleError RErrIncrNotIntegerOrRange mempty) (NotSubsCmd "INCR")
+    Right nextVal -> pure $ Right $ RspContinue
+      { resp = encodeInteger nextVal
+      , afterOp = updateReplicas ["INCR", key]
+      , subsCred = NotSubsCmd "INCR"
+      }
 
 execCommand :: ClientApp (Either BS.ByteString Response)
 execCommand = do
