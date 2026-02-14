@@ -166,47 +166,6 @@ lpopCommand key count = do
   tv <- asks $ (.msData) . senvStore . cenvShared
   (liftIO . atomically) (applyLPopHelper tv key count) >>= \resp -> pure $ Right resp
 
-execWithTimeout :: Double -> ClientApp (Either BS.ByteString Response) -> ClientApp (Either BS.ByteString (Bool, Response)) -> ClientApp (Either BS.ByteString Response)
-execWithTimeout timeout timeoutOp otherOp = go 0
-  where
-    go :: Double -> ClientApp (Either BS.ByteString Response)
-    go elapsed
-      | elapsed > timeout && timeout > 0 = timeoutOp
-      | otherwise = do
-          otherOp >>= \case
-            Right (shouldContinue, response) -> if shouldContinue then do liftIO $ threadDelay 1_000; go $ elapsed + 0.001 else pure $ Right response
-            Left err -> pure $ Left err
-
-awaitWithTimeout :: Int -> STM a -> IO (Maybe a)
-awaitWithTimeout timeoutMs waitAction
-  | timeoutMs == 0 = atomically (Just <$> waitAction)
-  | otherwise = do
-    fired <- registerDelay timeoutMs
-    atomically $ (Just <$> waitAction) `orElse` (readTVar fired >>= check >> pure Nothing)
-  where
-    check True  = pure ()
-    check False = retry
-
-blpopCommand :: BS.ByteString -> Int -> Int -> ClientApp (Either BS.ByteString Response)
-blpopCommand key timeout clientID = do
-  tvStore <- asks $ (.msData) . senvStore . cenvShared
-  maybeSomething <- liftIO $ awaitWithTimeout timeout $ waitAction key clientID tvStore
-  case maybeSomething of
-    Nothing -> do
-      pure $ Right $ RspNormal encodeNullArray (NotSubsCmd "BLPOP")
-    Just (RspNormal resp _) -> pure $ Right $ RspNormal resp (NotSubsCmd "BLPOP")
-    Just (RspContinue resp afterOp _) -> pure $ Right $ RspContinue { resp = resp, afterOp = afterOp, subsCred = NotSubsCmd "BLPOP" }
-  where
-    waitAction :: BS.ByteString -> Int -> TVar (M.Map BS.ByteString StoreEntry) -> STM Response
-    waitAction key clientID tvStore = do
-      val <- M.lookup key <$> readTVar tvStore
-      case val of
-        Nothing -> retry
-        Just (StoreEntry (StoreList []) Nothing) -> retry
-        Just (StoreEntry (StoreList (x : xs)) Nothing) -> applyLPopHelper tvStore key 1 >>= \case
-          (RspContinue resp op _) -> pure $ RspContinue { resp = encodeArray False [encodeBulkString key, resp], afterOp = op, subsCred = NotSubsCmd "BLPOP" }
-          (RspNormal resp _) -> pure $ RspNormal resp (NotSubsCmd "BLPOP")
-
 typeCommand :: BS.ByteString -> ClientApp (Either BS.ByteString Response)
 typeCommand key = do
   val <- getDataEntry key
@@ -465,46 +424,80 @@ sendAckCommand sock serverOffset tvCompleted = do
       -- liftIO $ hPutStrLn stderr "Sending REPLCONF GETACK *"
       liftIO $ send sock $ encodeArray True ["REPLCONF", "GETACK", "*"]
 
-waitCommand :: Int -> Double -> ClientApp (Either BS.ByteString Response)
+awaitWithTimeout :: Int -> STM a -> IO (Maybe a)
+awaitWithTimeout timeoutMs waitAction
+  | timeoutMs == 0 = atomically (Just <$> waitAction)
+  | otherwise = do
+    fired <- registerDelay timeoutMs
+    atomically $ (Just <$> waitAction) `orElse` (readTVar fired >>= check >> pure Nothing)
+  where
+    check True  = pure ()
+    check False = retry
+
+blpopCommand :: BS.ByteString -> Int -> Int -> ClientApp (Either BS.ByteString Response)
+blpopCommand key timeout clientID = do
+  tvStore <- asks $ (.msData) . senvStore . cenvShared
+  toResp <- liftIO $ awaitWithTimeout timeout $ waitAction key clientID tvStore
+  case toResp of
+    Nothing -> do
+      pure $ Right $ RspNormal encodeNullArray (NotSubsCmd "BLPOP")
+    Just (RspNormal resp _) -> pure $ Right $ RspNormal resp (NotSubsCmd "BLPOP")
+    Just (RspContinue resp afterOp _) -> pure $ Right $ RspContinue { resp = resp, afterOp = afterOp, subsCred = NotSubsCmd "BLPOP" }
+  where
+    waitAction :: BS.ByteString -> Int -> TVar (M.Map BS.ByteString StoreEntry) -> STM Response
+    waitAction key clientID tvStore = do
+      val <- M.lookup key <$> readTVar tvStore
+      case val of
+        Nothing -> retry
+        Just (StoreEntry (StoreList []) Nothing) -> retry
+        Just (StoreEntry (StoreList (x : xs)) Nothing) -> applyLPopHelper tvStore key 1 >>= \case
+          (RspContinue resp op _) -> pure $ RspContinue { resp = encodeArray False [encodeBulkString key, resp], afterOp = op, subsCred = NotSubsCmd "BLPOP" }
+          (RspNormal resp _) -> pure $ RspNormal resp (NotSubsCmd "BLPOP")
+
+waitCommand :: Int -> Int -> ClientApp (Either BS.ByteString Response)
 waitCommand reqReady timeout = do
   tv <- getReplicas
   replicas <- liftIO $ readTVarIO tv
   serverOffset <- getReplicaSentOffset
-  tvComplete <- asks (senvCompleteReplicaCount . cenvShared)
+  tvComplete <- asks $ senvCompleteReplicaCount . cenvShared
   liftIO . atomically $ modifyTVar' tvComplete (const 0)
 
+  liftIO $ print "WAIT command: Sent ACK to all clients"
   sendAcknowledgements serverOffset tvComplete replicas
+  
   currOffset <- getReplicaSentOffset
   if currOffset > 0
     then do
-      liftIO $ hPutStrLn stderr "Sent ACK to all clients"
-      execWithTimeout (timeout / 1_000) countSoFarOp countFullOp
+    tvCompRepCount <- asks $ senvCompleteReplicaCount . cenvShared
+    tvReplicaSentOS <- asks $ senvReplicaSentOffset . cenvShared
+    toResp <- liftIO $ awaitWithTimeout timeout $ waitAction tvCompRepCount tvReplicaSentOS
+    case toResp of
+      Nothing -> do
+        liftIO . atomically $ do
+          updateServer tvReplicaSentOS
+        resCompRepCount <- liftIO $ readTVarIO tvCompRepCount
+        pure $ Right $ RspNormal (encodeInteger resCompRepCount) (NotSubsCmd "WAIT")
+      Just resp -> pure $ Right resp
     else pure $ Right $ RspNormal (encodeInteger $ length replicas) (NotSubsCmd "WAIT")
   where
+    waitAction :: TVar Int -> TVar Int -> STM Response
+    waitAction tvCompRepCount tvReplicaSentOS = do
+      compRepCount <- readTVar tvCompRepCount
+      if compRepCount >= reqReady
+      then do
+        updateServer tvReplicaSentOS
+        pure $ RspNormal (encodeInteger compRepCount) (NotSubsCmd "WAIT")
+      else retry
+    updateServer :: TVar Int -> STM ()
+    updateServer tv = do
+      let encodedCommand = encodeArray True ["REPLCONF", "GETACK", "*"]
+      currOffset <- readTVar tv
+      modifyTVar' tv (const (currOffset + BS8.length encodedCommand) )
+    sendAcknowledgements :: Int -> TVar Int -> [Socket] -> ClientApp ()
     sendAcknowledgements serverOS tvComplete [] = pure ()
     sendAcknowledgements serverOS tvComplete (x : xs) = do
       liftIO $ sendAckCommand x serverOS tvComplete
       sendAcknowledgements serverOS tvComplete xs
-    countSoFarOp :: ClientApp (Either BS.ByteString Response)
-    countSoFarOp = do
-      result <- getCompleteReplicas
-      updateServerSent
-      pure $ Right $ RspNormal (encodeInteger result) (NotSubsCmd "WAIT")
-    countFullOp :: ClientApp (Either BS.ByteString (Bool, Response))
-    countFullOp = do
-      result <- getCompleteReplicas
-      if result >= reqReady
-        then do
-          updateServerSent
-          pure $ Right (False, RspNormal (encodeInteger result) (NotSubsCmd "WAIT"))
-        else pure $ Right (True, RspNormal mempty (NotSubsCmd "WAIT"))
-    getCompleteReplicas = do
-      tv <- asks (senvCompleteReplicaCount . cenvShared)
-      liftIO $ readTVarIO tv
-    updateServerSent = do
-      let encodedCommand = encodeArray True ["REPLCONF", "GETACK", "*"]
-      currOffset <- getReplicaSentOffset
-      setReplicaSentOffset (BS8.length encodedCommand + currOffset)
 
 configCommand :: ConfigArgs -> ClientApp (Either BS.ByteString Response)
 configCommand ConfigGetDir = do
@@ -811,7 +804,7 @@ handleClientConnection = go mempty
                (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
                (ReplConf replOptions) -> replConfCommand replOptions
                (Psync req) -> psyncCommand req
-               (Wait replicaNum timeout) -> waitCommand replicaNum timeout
+               (Wait replicaNum timeout) -> waitCommand replicaNum (round (timeout * 1_000))
                (Config opt) -> configCommand opt
                (Keys filter) -> keysCommand filter
                (Subscribe channel) -> subscribeCommand channel
