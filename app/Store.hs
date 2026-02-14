@@ -142,15 +142,16 @@ instance MonadStore ReplicaApp where
     liftIO . atomically $ modifyTVar' tv (const offset)
   getZSet name = do
     tv <- asks $ senvSets . renvShared
-    hmSets <- liftIO $ readTVarIO tv
-    case HM.lookup name hmSets of
-      Just s -> pure s
-      -- Just (ZSet zsetMap zDict) -> pure zsetMap
-      Nothing -> do
-        let newSetScoreMap = M.empty -- create a new set, and return it
-        let newSetMemberDict = HM.empty
-        liftIO . atomically $ modifyTVar' tv (\curr -> HM.insert name (ZSet newSetScoreMap newSetMemberDict) hmSets)
-        pure (ZSet newSetScoreMap newSetMemberDict)
+    liftIO . atomically $ do
+      hmSets <- readTVar tv
+      case HM.lookup name hmSets of
+        Just s -> pure s
+        -- Just (ZSet zsetMap zDict) -> pure zsetMap
+        Nothing -> do
+          let newSetScoreMap = M.empty -- create a new set, and return it
+          let newSetMemberDict = HM.empty
+          modifyTVar' tv (HM.insert name (ZSet newSetScoreMap newSetMemberDict))
+          pure (ZSet newSetScoreMap newSetMemberDict)
   getZSets = asks $ senvSets . renvShared
   
 instance MonadStore ClientApp where
@@ -166,15 +167,16 @@ instance MonadStore ClientApp where
     liftIO . atomically $ modifyTVar' tv (const offset)
   getZSet name = do
     tv <- asks $ senvSets . cenvShared
-    hmSets <- liftIO $ readTVarIO tv
-    case HM.lookup name hmSets of
-      Just s -> pure s
-      -- Just (ZSet zsetMap zDict) -> pure zsetMap
-      Nothing -> do
-        let newSetScoreMap = M.empty -- create a new set, and return it
-        let newSetMemberDict = HM.empty
-        liftIO . atomically $ modifyTVar' tv (\curr -> HM.insert name (ZSet newSetScoreMap newSetMemberDict) hmSets)
-        pure (ZSet newSetScoreMap newSetMemberDict)
+    liftIO . atomically $ do
+      hmSets <- readTVar tv
+      case HM.lookup name hmSets of
+        Just s -> pure s
+        -- Just (ZSet zsetMap zDict) -> pure zsetMap
+        Nothing -> do
+          let newSetScoreMap = M.empty -- create a new set, and return it
+          let newSetMemberDict = HM.empty
+          modifyTVar' tv (HM.insert name (ZSet newSetScoreMap newSetMemberDict))
+          pure (ZSet newSetScoreMap newSetMemberDict)
   getZSets = asks $ senvSets . cenvShared
 
 addChannelSubcriber :: BS.ByteString -> Socket -> ClientApp ()
