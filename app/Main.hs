@@ -145,7 +145,7 @@ llenCommand key = do
     Nothing -> pure $ Right $ RspNormal (encodeInteger 0) (NotSubsCmd "LLEN")
     Just (StoreEntry (StoreList v) Nothing) -> pure $ Right $ RspNormal (encodeInteger $ length v) (NotSubsCmd "LLEN")
 
-applyLPopHelper :: TVar (M.Map BS.ByteString StoreEntry) -> BS.ByteString -> Int -> STM Response
+applyLPopHelper :: TVStore -> BS.ByteString -> Int -> STM Response
 applyLPopHelper tvData key count = do
     curr <- readTVar tvData
     case M.lookup key curr of
@@ -163,7 +163,7 @@ applyLPopHelper tvData key count = do
 
 lpopCommand :: BS.ByteString -> Int -> ClientApp (Either BS.ByteString Response)
 lpopCommand key count = do
-  tv <- asks $ (.msData) . senvStore . cenvShared
+  tv <- asks $ (.sData) . senvStore . cenvShared
   (liftIO . atomically) (applyLPopHelper tv key count) >>= \resp -> pure $ Right resp
 
 typeCommand :: BS.ByteString -> ClientApp (Either BS.ByteString Response)
@@ -213,12 +213,12 @@ xrangeEndHelper key f = do
     Nothing -> pure Nothing
     Just (EntryId m v, _) -> pure $ Just (RangeEntryId m v)
 
-xrangeHelper :: BS.ByteString -> (EntryId -> EntryId -> Bool) -> RangeEntryId -> RangeEntryId -> ClientApp (Either BS.ByteString Response)
-xrangeHelper key rangef (RangeEntryId mili1 mili2) (RangeEntryId seq1 seq2) = do
-  (_, Stream oldStream, _) <- getStream key (const Nothing . M.filterWithKey (\_ _ -> True))
-  let allKeysValues = M.toAscList (U.range rangef (EntryId mili1 mili2) (EntryId seq1 seq2) oldStream)
-  let resp = parseKeysValues allKeysValues
-  pure $ Right $ RspNormal resp (NotSubsCmd "XRANGE")
+xrangeHelper :: StoreData -> BS.ByteString -> (EntryId -> EntryId -> Bool) -> RangeEntryId -> RangeEntryId -> Either BS.ByteString Response
+xrangeHelper storeData key rangef (RangeEntryId mili1 mili2) (RangeEntryId seq1 seq2) =
+  let (_, Stream oldStream, _) = getStreamTEMP storeData key (const Nothing . M.filterWithKey (\_ _ -> True))
+      allKeysValues = M.toAscList (U.range rangef (EntryId mili1 mili2) (EntryId seq1 seq2) oldStream)
+      resp = parseKeysValues allKeysValues
+  in Right $ RspNormal resp (NotSubsCmd "XRANGE")
   where
     parseKeysValues :: [(EntryId, RedisStreamValues)] -> BS.ByteString
     parseKeysValues keysValues = "*" <> (BS8.pack . show . length) keysValues <> "\r\n"
@@ -249,61 +249,90 @@ xrangeCommand key (RangeMili mili) (RangeMili seq) = do
   case res of
     Nothing -> pure $ Right $ RspNormal (encodeSimpleError RErrXRangeIDNonExisting mempty) (NotSubsCmd "XRANGE")
     Just (RangeEntryId _ newEnd) -> xrangeCommand key (RangeEntryId mili 0) (RangeEntryId seq newEnd)
-xrangeCommand key mili@(RangeEntryId _ _) seq@(RangeEntryId _ _) = xrangeHelper key (<) mili seq
+xrangeCommand key mili@(RangeEntryId _ _) seq@(RangeEntryId _ _) = do
+  tvStore <- getData
+  storeData <- liftIO $ readTVarIO tvStore
+  pure $ xrangeHelper storeData key (<) mili seq
 
-xreadEntriesAvailable :: [(BS.ByteString, RangeEntryId)] -> ClientApp (Bool, [(BS.ByteString, RangeEntryId)])
-xreadEntriesAvailable keyIds = do
-  go keyIds []
+normRangeEnd :: StoreData -> BS.ByteString -> (EntryId -> RedisStreamValues -> Bool) -> Maybe RangeEntryId
+normRangeEnd storeData key f = 
+  let (filteredStream, _, streams) = getStreamTEMP storeData key (M.lookupMax . M.filterWithKey f)
+  in case filteredStream of
+       Nothing -> Nothing
+       Just (EntryId m v, _) -> Just (RangeEntryId m v)
+
+type KeysIds = [(BS.ByteString, RangeEntryId)]
+xreadEntries :: StoreData -> KeysIds -> (Bool, [(BS.ByteString, RangeEntryId)])
+xreadEntries storeData keyIds = (hasEntries, normalizedIds)
   where
-    go :: [(BS.ByteString, RangeEntryId)] -> [(BS.ByteString, RangeEntryId)] -> ClientApp (Bool, [(BS.ByteString, RangeEntryId)])
-    go [] newIds = pure (False, newIds)
-    go wholelist@(entry@(key, entry_id) : xs) newIds = do
-      res <- xrangeEndHelper key (\_ _ -> True)
-      case res of
-        Nothing -> case entry_id of
-          RangeDollar -> go xs (newIds ++ [(key, RangeEntryId 0 0)])
-          _ -> go xs (newIds ++ [entry])
-        Just r@(RangeEntryId endMili endSeq) -> do
-          (_, Stream oldStream, _) <- getStream key (const Nothing . M.filterWithKey (\_ _ -> True))
-          getRange entry_id endMili endSeq oldStream
-          where
-            getRange :: RangeEntryId -> Word64 -> Word64 -> M.Map EntryId RedisStreamValues -> ClientApp (Bool, [(BS.ByteString, RangeEntryId)])
-            getRange (RangeEntryId startMili startSeq) endMili endSeq oldStream = do
-              let allKeysValues = U.range (<=) (EntryId startMili startSeq) (EntryId endMili endSeq) oldStream
-              if null allKeysValues then go xs (newIds ++ [entry]) else pure (True, newIds ++ [entry])
-            getRange RangeDollar endMili endSeq oldStream = do
-              let updatedEntry = (key, RangeEntryId endMili endSeq)
-              go xs (newIds ++ [updatedEntry])
+    normalizedIds = map normalizeEntryId keyIds
+    hasEntries = any (streamHasEntries storeData) normalizedIds
 
-xreadCommand :: [(BS.ByteString, RangeEntryId)] -> Maybe Double -> ClientApp (Either BS.ByteString Response)
-xreadCommand keysIds (Just timeout) = go 0 keysIds
+    normalizeEntryId :: (BS.ByteString, RangeEntryId) -> (BS.ByteString, RangeEntryId)
+    normalizeEntryId (key, entryID) =
+      case entryID of
+        RangeDollar ->
+          case normRangeEnd storeData key (\_ _ -> True) of
+            Just endId -> (key, endId)
+            Nothing -> (key, RangeEntryId 0 0)
+        RangeMili mili -> (key, RangeEntryId mili 0)
+        RangeMinusPlus -> (key, RangeEntryId 0 0)
+        _ -> (key, entryID)
+
+    streamHasEntries :: StoreData -> (BS.ByteString, RangeEntryId) -> Bool
+    streamHasEntries storeData (streamID, entryID) =
+      case normRangeEnd storeData streamID (\_ _ -> True) of
+        Nothing -> False
+        Just endID ->
+          case xrangeHelper storeData streamID (<=) entryID endID of
+            Right (RspNormal streamResp _) -> streamResp /= "*0\r\n"
+            _ -> False
+
+applyReadCommand :: StoreData -> KeysIds -> Either BS.ByteString Response
+applyReadCommand storeData keysIds =
+  let streamResponses = go storeData keysIds []
+  in if null streamResponses
+       then Right $ RspNormal encodeNullArray (NotSubsCmd "XREAD")
+       else Right $ RspNormal ("*" <> (BS8.pack . show . length) streamResponses <> "\r\n" <> BS.concat streamResponses) (NotSubsCmd "XREAD")
   where
-    go elapsed ids = do
-      (hasEntries, newIds) <- xreadEntriesAvailable ids
-      if hasEntries
-        then xreadCommand newIds Nothing
-        else
-          if elapsed > (timeout / 1_000) && timeout > 0
-            then pure $ Right $ RspNormal encodeNullArray (NotSubsCmd "XREAD")
-            else do
-              liftIO $ threadDelay 1_000
-              go (elapsed + 0.001) newIds
+    go :: StoreData -> KeysIds -> [BS.ByteString] -> [BS.ByteString]
+    go storeData [] acc = reverse acc
+    go storeData ((stream_id, entry_id) : xs) acc =
+      let res = normRangeEnd storeData stream_id (\_ _ -> True)
+      in case res of
+           Nothing -> go storeData xs acc
+           Just seq -> let eitherResp = xrangeHelper storeData stream_id (<=) entry_id seq
+                       in case eitherResp of
+                            Right (RspNormal streamResp _) ->
+                              if streamResp == "*0\r\n"
+                                then go storeData xs acc
+                                else go storeData xs (("*2\r\n" <> encodeBulkString stream_id <> streamResp) : acc)
+                            Left _ -> go storeData xs acc
 
+xreadCommand :: KeysIds -> Maybe Double -> ClientApp (Either BS.ByteString Response)
+xreadCommand keysIds (Just timeout) = do
+  tvStore <- getData
+  initialStore <- liftIO $ readTVarIO tvStore
+  let (hasEntries, normalizedIds) = xreadEntries initialStore keysIds
+  if hasEntries
+    then pure $ applyReadCommand initialStore normalizedIds
+    else do
+      toResp <- liftIO $ awaitWithTimeout (round (timeout * 1_000)) $ waitAction tvStore normalizedIds
+      case toResp of
+        Nothing -> pure $ Right $ RspNormal encodeNullArray (NotSubsCmd "XREAD")
+        Just resp -> pure resp
+  where
+    waitAction :: TVStore -> KeysIds -> STM (Either BS.ByteString Response)
+    waitAction tvStore ids = do
+      storeData <- readTVar tvStore
+      let (hasEntries, _) = xreadEntries storeData ids
+      check hasEntries
+      pure $ applyReadCommand storeData ids
 xreadCommand keysIds Nothing = do
-  result <- go keysIds BS.empty 0
-  pure $ Right $ RspNormal ("*" <> (BS8.pack . show . length) keysIds <> "\r\n" <> result) (NotSubsCmd "XREAD")
-  where
-    go :: [(BS.ByteString, RangeEntryId)] -> BS.ByteString -> Double -> ClientApp BS.ByteString
-    go [] acc elapsed = pure acc
-    go ((stream_id, entry_id) : xs) acc elapsed = do
-      res <- xrangeEndHelper stream_id (\_ _ -> True)
-      case res of
-        Nothing -> pure encodeNullArray
-        Just seq -> do
-          eitherResp <- xrangeHelper stream_id (<=) entry_id seq
-          case eitherResp of
-            Right (RspNormal streamResp _) -> go xs (acc <> "*2\r\n" <> encodeBulkString stream_id <> streamResp) elapsed
-            Left _ -> go xs acc elapsed
+  tvStore <- getData
+  storeData <- liftIO $ readTVarIO tvStore
+  let (_, normalizedIds) = xreadEntries storeData keysIds
+  pure $ applyReadCommand storeData normalizedIds
 
 incrCommand :: (MonadStore m) => BS.ByteString -> m (Either BS.ByteString Response)
 incrCommand key = do
@@ -436,7 +465,7 @@ awaitWithTimeout timeoutMs waitAction
 
 blpopCommand :: BS.ByteString -> Int -> Int -> ClientApp (Either BS.ByteString Response)
 blpopCommand key timeout clientID = do
-  tvStore <- asks $ (.msData) . senvStore . cenvShared
+  tvStore <- asks $ (.sData) . senvStore . cenvShared
   toResp <- liftIO $ awaitWithTimeout timeout $ waitAction key clientID tvStore
   case toResp of
     Nothing -> do
@@ -444,7 +473,7 @@ blpopCommand key timeout clientID = do
     Just (RspNormal resp _) -> pure $ Right $ RspNormal resp (NotSubsCmd "BLPOP")
     Just (RspContinue resp afterOp _) -> pure $ Right $ RspContinue { resp = resp, afterOp = afterOp, subsCred = NotSubsCmd "BLPOP" }
   where
-    waitAction :: BS.ByteString -> Int -> TVar (M.Map BS.ByteString StoreEntry) -> STM Response
+    waitAction :: BS.ByteString -> Int -> TVStore -> STM Response
     waitAction key clientID tvStore = do
       val <- M.lookup key <$> readTVar tvStore
       case val of
@@ -877,7 +906,7 @@ awaitServerUpdates sock = go 0
                Right _ -> pure $ Right ()
                Left _ -> pure $ Left "Err (Replica): LPush command"
            LPop key count -> do
-             tvStore  <- asks $ (.msData) . senvStore . renvShared
+             tvStore  <- asks $ (.sData) . senvStore . renvShared
              liftIO . atomically $ applyLPopHelper tvStore key count
              pure $ Right ()
            XAdd streamID entryID v ->
@@ -1030,4 +1059,4 @@ main = do
       magicWord <- BS.hGet h 5
       redisVersion <- BS.hGet h 4
       consumeMetadata h
-      consumeDB h (msData store)
+      consumeDB h (sData store)

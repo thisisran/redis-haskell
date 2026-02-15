@@ -29,6 +29,8 @@ module Types
   , StoreValue (..)
   , StoreEntry (..)
   , Store (..)
+  , TVStore
+  , StoreData
   , ClientState (..)
   , Response (..)
   , RedisStreamValues
@@ -228,9 +230,12 @@ data StoreEntry = StoreEntry
     expiresAt :: Maybe (ExDurationMs, ExRef)
   } deriving (Eq, Show)
 
+type StoreData = M.Map BS.ByteString StoreEntry
+type TVStore = TVar StoreData
+
 data Store = Store
-  { msData :: TVar (M.Map BS.ByteString StoreEntry)
-  , msBLPopWaiters :: TVar (M.Map BS.ByteString IS.IntSet)
+  { sData :: TVStore
+  , sBLPopWaiters :: TVar (M.Map BS.ByteString IS.IntSet)
   }
 
 data ReplicationCmdOption = WantMaster

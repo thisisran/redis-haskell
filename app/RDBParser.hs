@@ -12,7 +12,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Trans.Maybe (MaybeT (..), runMaybeT)
+import Control.Monad.Trans.Maybe (MaybeT (..), runMaybeT, hoistMaybe)
 
 import Control.Concurrent.STM (atomically, modifyTVar', TVar)
 import qualified Data.Map.Strict as M
@@ -43,10 +43,10 @@ lengthEncoding h = do
         part3 <- BS.hGet h 1
         part4 <- BS.hGet h 1
         res <- runMaybeT $ do
-          (p1, _) <- MaybeT . pure $ BS.uncons part1
-          (p2, _) <- MaybeT . pure $ BS.uncons part2
-          (p3, _) <- MaybeT . pure $ BS.uncons part3
-          (p4, _) <- MaybeT . pure $ BS.uncons part4
+          (p1, _) <- hoistMaybe $ BS.uncons part1
+          (p2, _) <- hoistMaybe $ BS.uncons part2
+          (p3, _) <- hoistMaybe $ BS.uncons part3
+          (p4, _) <- hoistMaybe $ BS.uncons part4
           pure (p1, p2, p3, p4)
         case res of
           Just (p1, p2, p3, p4) -> pure $ Right (SimpleString $ U.fourBytesToInt p1 p2 p3 p4)
@@ -73,8 +73,8 @@ decodeString h = do
              num1c <- liftIO $ BS.hGet h 1
              num2c <- liftIO $ BS.hGet h 1
              res <- runMaybeT $ do
-               (x1, _) <- MaybeT . pure $ BS.uncons num1c
-               (x2, _) <- MaybeT . pure $ BS.uncons num2c
+               (x1, _) <- hoistMaybe $ BS.uncons num1c
+               (x2, _) <- hoistMaybe $ BS.uncons num2c
                pure (x1, x2)
              case res of
                Just (x1, x2) -> pure $ Just (BS8.pack . show $ U.twoBytesToInt x1 x2)
@@ -85,10 +85,10 @@ decodeString h = do
              num3c <- BS.hGet h 1
              num4c <- BS.hGet h 1
              res <- runMaybeT $ do
-               (x1, _) <- MaybeT . pure $ BS.uncons num1c
-               (x2, _) <- MaybeT . pure $ BS.uncons num1c
-               (x3, _) <- MaybeT . pure $ BS.uncons num1c
-               (x4, _) <- MaybeT . pure $ BS.uncons num1c
+               (x1, _) <- hoistMaybe $ BS.uncons num1c
+               (x2, _) <- hoistMaybe $ BS.uncons num1c
+               (x3, _) <- hoistMaybe $ BS.uncons num1c
+               (x4, _) <- hoistMaybe $ BS.uncons num1c
                pure (x1, x2, x3, x4)
              case res of
                Just (x1, x2, x3, x4) -> pure $ Just (BS8.pack . show $ U.fourBytesToInt x1 x2 x3 x4)
@@ -188,10 +188,10 @@ consumeHashTable h store = do
       num3c <- BS.hGet h 1
       num4c <- BS.hGet h 1
       res <- runMaybeT $ do
-        (x4, _) <- MaybeT . pure $ BS.uncons num4c
-        (x3, _) <- MaybeT . pure $ BS.uncons num4c
-        (x2, _) <- MaybeT . pure $ BS.uncons num4c
-        (x1, _) <- MaybeT . pure $ BS.uncons num4c
+        (x4, _) <- hoistMaybe $ BS.uncons num4c
+        (x3, _) <- hoistMaybe $ BS.uncons num4c
+        (x2, _) <- hoistMaybe $ BS.uncons num4c
+        (x1, _) <- hoistMaybe $ BS.uncons num4c
         pure (x4, x3, x2, x1)
       case res of
         Just (x4, x3, x2, x1) -> pure $ U.fourBytesToInt x4 x3 x2 x1 * 1_000
@@ -206,14 +206,14 @@ consumeHashTable h store = do
       num7c <- BS.hGet h 1
       num8c <- BS.hGet h 1
       res <- runMaybeT $ do
-        (x8, _) <- MaybeT . pure $ BS.uncons num8c
-        (x7, _) <- MaybeT . pure $ BS.uncons num7c
-        (x6, _) <- MaybeT . pure $ BS.uncons num6c
-        (x5, _) <- MaybeT . pure $ BS.uncons num5c
-        (x4, _) <- MaybeT . pure $ BS.uncons num4c
-        (x3, _) <- MaybeT . pure $ BS.uncons num3c
-        (x2, _) <- MaybeT . pure $ BS.uncons num2c
-        (x1, _) <- MaybeT . pure $ BS.uncons num1c
+        (x8, _) <- hoistMaybe $ BS.uncons num8c
+        (x7, _) <- hoistMaybe $ BS.uncons num7c
+        (x6, _) <- hoistMaybe $ BS.uncons num6c
+        (x5, _) <- hoistMaybe $ BS.uncons num5c
+        (x4, _) <- hoistMaybe $ BS.uncons num4c
+        (x3, _) <- hoistMaybe $ BS.uncons num3c
+        (x2, _) <- hoistMaybe $ BS.uncons num2c
+        (x1, _) <- hoistMaybe $ BS.uncons num1c
         pure (x8, x7, x6, x5, x4, x3, x2, x1)
       case res of
         Just (x8, x7, x6, x5, x4, x3, x2, x1) -> pure $ U.eightBytesToInt x8 x7 x6 x5 x4 x3 x2 x1

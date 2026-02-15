@@ -13,6 +13,7 @@ module Store
   , getDataEntry
   , setDataEntry
   , addWaiterOnce
+  , getStreamTEMP
   , getWaiterEntry
   , delDataEntry
   , delWaiterEntry
@@ -65,8 +66,15 @@ import Network.Simple.TCP (Socket)
 
 import qualified Data.ByteString as BS
 
+type StreamFilter = M.Map EntryId RedisStreamValues -> Maybe (EntryId, RedisStreamValues)
+getStreamTEMP :: StoreData -> BS.ByteString -> StreamFilter -> (Maybe (EntryId, RedisStreamValues), RedisStream, RedisStreams)
+getStreamTEMP store streamID filter = let streams = M.lookup "streams" store
+                                          s@(Streams stream)  = maybe (Streams HM.empty) (\(StoreEntry (StoreStreams s) Nothing) -> s) streams
+                                          os@(Stream oldStream) = fromMaybe (Stream M.empty) $ HM.lookup streamID stream
+                                      in (filter oldStream, os, s)
+
 class (Monad m, MonadIO m) => MonadStore m where
-  getData :: m (TVar (M.Map BS.ByteString StoreEntry))
+  getData :: m TVStore
   setDataEntry :: BS.ByteString -> StoreEntry -> m ()
   setDataEntry key value = do
     tv <- getData
@@ -130,7 +138,7 @@ class (Monad m, MonadIO m) => MonadStore m where
 -------------------------------------------------------------------------------------
 
 instance MonadStore ReplicaApp where
-  getData = asks $ (.msData) . senvStore . renvShared
+  getData = asks $ (.sData) . senvStore . renvShared
   getPort = asks $ (.cfgPort) . senvConfig . renvShared
   getReplication = asks $ (.cfgReplication) . senvConfig . renvShared
   getReplicas = asks $ senvReplicas . renvShared
@@ -155,7 +163,7 @@ instance MonadStore ReplicaApp where
   getZSets = asks $ senvSets . renvShared
   
 instance MonadStore ClientApp where
-  getData = asks $ (.msData) . senvStore . cenvShared
+  getData = asks $ (.sData) . senvStore . cenvShared
   getPort = asks $ (.cfgPort) . senvConfig . cenvShared
   getReplication = asks $ (.cfgReplication) . senvConfig . cenvShared
   getReplicas = asks (senvReplicas . cenvShared)
@@ -206,7 +214,7 @@ getChannelClients channel = do
     Nothing -> pure []
 
 getWaiters :: ClientApp (TVar (M.Map BS.ByteString IS.IntSet))
-getWaiters = asks $ (.msBLPopWaiters) . senvStore . cenvShared
+getWaiters = asks $ (.sBLPopWaiters) . senvStore . cenvShared
 
 delDataEntry :: BS.ByteString -> ClientApp ()
 delDataEntry key = do
