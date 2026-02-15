@@ -7,6 +7,7 @@ default-extensions:
   - NumericUnderscores
   - LambdaCase
   - OverloadedRecordDot
+  - BangPatterns
 
 dependencies:
   - base >= 4.19 && < 5

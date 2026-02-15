@@ -1,11 +1,9 @@
-{-# LANGUAGE BangPatterns #-}
-
 module Utilities
   ( bsToLower
   , bsToInteger
   , bsToInt
   , bsToDouble
-  , nowNs
+  , nowMS
   , hasElapsedSince
   , entryIdToBS
   , range
@@ -27,7 +25,6 @@ import Control.Monad.IO.Class (liftIO)
                               
 import Control.Monad (replicateM, guard)
 import Data.Char (toLower)
--- import Text.Megaparsec (errorBundlePretty,  ParseErrorBundle)
 import Text.Read (readMaybe)
 
 import Data.Void (Void)
@@ -170,14 +167,12 @@ bsToInt bs = do
 bsToDouble :: BS.ByteString -> Maybe Double
 bsToDouble = readMaybe . BS8.unpack
 
-nowNs :: IO Integer
-nowNs = fmap (floor . (* 1000)) getPOSIXTime
+nowMS :: IO Integer
+nowMS = fmap (floor . (* 1000)) getPOSIXTime
 
 hasElapsedSince :: Integer -> Integer -> IO Bool
 hasElapsedSince thresholdMs startNs = do
-  print $ "Start timestamp: " <> show startNs
-  print $ "threshold: " <> show thresholdMs
-  endNs <- nowNs
+  endNs <- nowMS
   pure (endNs - startNs >= thresholdMs)
 
 range :: Ord k => (k -> k -> Bool) -> k -> k -> M.Map k v -> M.Map k v
@@ -198,12 +193,6 @@ entryIdToBS (EntryId ms seq) =
   BSL.toStrict $
     BB.toLazyByteString $
       BB.word64Dec ms <> BB.char7 '-' <> BB.word64Dec seq
-
--- renderParseError :: ParseErrorBundle BS.ByteString Void -> BS.ByteString
--- renderParseError =
---  BS8.pack . take 200 . oneLine . errorBundlePretty
---  where
---   oneLine = map (\c -> if c == '\n' || c == '\r' then ' ' else c)
 
 randomAlphaNum40BS :: IO BS.ByteString
 randomAlphaNum40BS = BS8.pack <$> replicateM 40 pick

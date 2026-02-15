@@ -57,7 +57,7 @@ updateReplicas command = do
 
 setCommand :: (MonadStore m) => BS.ByteString -> BS.ByteString -> Maybe SetExpiry -> m (Either BS.ByteString Response)
 setCommand key val ex = do
-  now <- liftIO U.nowNs
+  now <- liftIO U.nowMS
   setDataEntry key $ handleExpiry ex now
 
   let exCommand = case ex of
@@ -180,7 +180,7 @@ typeCommand key = do
 
 xaddCommand :: (MonadStore m) => BS.ByteString -> EntryId -> RedisStreamValues -> m (Either BS.ByteString Response)
 xaddCommand streamID (EntryId 0 0) values = pure $ Right $ RspNormal (encodeSimpleError RErrXAddGtThan0 mempty) (NotSubsCmd "XADD")
-xaddCommand streamID EntryGenNew values = liftIO U.nowNs >>= \now -> xaddCommand streamID (EntryGenSeq (fromIntegral now)) values
+xaddCommand streamID EntryGenNew values = liftIO U.nowMS >>= \now -> xaddCommand streamID (EntryGenSeq (fromIntegral now)) values
 xaddCommand streamID (EntryGenSeq mili) values = do
   (filteredStream, _, _) <- getStream streamID (M.lookupMax . M.filterWithKey (\(EntryId m _) _ -> m == mili))
   case filteredStream of
@@ -491,9 +491,7 @@ waitCommand reqReady timeout = do
   tvComplete <- asks $ senvCompleteReplicaCount . cenvShared
   liftIO . atomically $ modifyTVar' tvComplete (const 0)
 
-  liftIO $ print "WAIT command: Sent ACK to all clients"
   sendAcknowledgements serverOffset tvComplete replicas
-  
   currOffset <- getReplicaSentOffset
   if currOffset > 0
     then do

@@ -30,7 +30,7 @@ lengthEncoding h = do
   lenc1 <- BS.hGet h 1
   case BS.uncons lenc1 of
     Just (byte1, _) -> case byte1 `shiftR` 6 of
-      -- print "the next 6 bits represent the length"
+      -- "the next 6 bits represent the length"
       0 -> pure $ Right (SimpleString $ fromIntegral byte1)
       1 -> do
         lenc2 <- BS.hGet h 1
@@ -127,7 +127,7 @@ consumeMetadata h = do
         Just key -> do
           mValue <- decodeString h
           case mValue of
-            Just value -> print $ key <> ": " <> value
+            Just value -> pure ()
 
 -- consumes only 1 hash table
 consumeHashTable :: Handle -> TVar (M.Map BS.ByteString StoreEntry) -> IO ()
@@ -145,7 +145,6 @@ consumeHashTable h store = do
           mExpiryEntries <- lengthEncoding h
           case mExpiryEntries of
             Right (SimpleString expiryEntries) -> do
-              -- print $ "Total entries = " <> (BS8.pack . show) totalEntries <> ", Expired keys = " <> (BS8.pack . show) expiryEntries
               processNormalKey $ totalEntries - expiryEntries
               processExpiredKey expiryEntries
             _ -> pure ()
@@ -158,7 +157,6 @@ consumeHashTable h store = do
           (readKey, readValue) <- processKeyValue
           let formattedValue = StoreEntry (StoreString readValue) Nothing
           atomically $ modifyTVar' store (M.insert readKey formattedValue)
-        -- print $ "Key: " <> readKey <> ", Value: " <> readValue
           processNormalKey $ count - 1
         Nothing -> pure ()
     processExpiredKey 0 = pure ()
@@ -173,10 +171,8 @@ consumeHashTable h store = do
           case BS.uncons vType of
             Just (y, _) -> when (y == 0) $ do -- currently only supporting string values
               (readKey, readValue) <- processKeyValue
-              now <- U.nowNs
-              print $ "Now: " <> show now
+              now <- U.nowMS
               let dur = max 0 (expiry - fromIntegral now)
-              print $ "Expiry: " <> show expiry
               let formattedValue = StoreEntry (StoreString readValue) (Just (ExDurationMs (fromIntegral dur), ExRef now))
               atomically $ modifyTVar' store (M.insert readKey formattedValue)
               processExpiredKey $ count - 1
@@ -245,17 +241,6 @@ consumeDB h store = do
     processDatabaseEntry = do
       mCount <- lengthEncoding h
       case mCount of
-        Right (SimpleString count) -> do
-          print $ "Index: " <> (BS8.pack. show) count
-          consumeHashTable h store -- TODO: check what type of item is presented, for the challenge we assume a hash table
+        Right (SimpleString count) -> consumeHashTable h store -- TODO: check what type of item is presented, for the challenge we assume a hash table
           -- mEndOfFile <- BS.hGet h 1
         _ -> pure () -- should not be the case according to the spec
-
--- main :: IO ()
--- main =
---   withBinaryFile "dump.rdb" ReadMode $ \h -> do
---     magicWord <- BS.hGet h 5
---     redisVersion <- BS.hGet h 4
---     print $ "Header section: " <> magicWord <> " " <> redisVersion
---     consumeMetadata h
---     consumeDB h
