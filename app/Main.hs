@@ -40,7 +40,6 @@ import UnliftIO (MonadUnliftIO, withRunInIO)
 import qualified UnliftIO as UL
 import qualified Utilities as U
 
-
 updateReplicas :: (MonadStore m) => [BS.ByteString] -> m ()
 updateReplicas command = do
   getReplication >>= \case
@@ -548,19 +547,17 @@ keysCommand filter = do
   pure $ Right $ RspNormal (encodeArray True (foldl' foldme [] result)) (NotSubsCmd "KEYS")
   where
     foldme :: [BS.ByteString] -> BS.ByteString -> [BS.ByteString]
-    foldme acc item =
-      if go (BS8.unpack filter) (BS8.unpack item)
-        then acc ++ [BS8.pack (BS8.unpack item)]
-        else acc
-    go :: String -> String -> Bool
-    go [] [] = True
-    go [] _ = False
-    go ('*' : _) [] = True
-    go (x : _) [] = False
-    go (x : xs) (y : ys)
-      | x == '*' = True
-      | x /= y = False
-      | otherwise = go xs ys
+    foldme acc item = if go filter item then acc ++ [item] else acc
+    go :: BS.ByteString -> BS.ByteString -> Bool
+    go xs ys = case (BS8.uncons xs, BS8.uncons ys) of
+                 (Nothing, Nothing) -> True
+                 (Nothing, _) -> False
+                 (Just ('*', _), Nothing) -> True
+                 (Just (x, _), Nothing) -> False
+                 (Just (x, xs), Just (y, ys))
+                   | x == '*' -> True
+                   | x /= y -> False
+                   | otherwise -> go xs ys
 
 subscribeCommand :: BS.ByteString -> ClientApp (Either BS.ByteString Response)
 subscribeCommand channel = do
@@ -1033,7 +1030,7 @@ main = do
       i <- readTVar nextID
       writeTVar nextID (i + 1)
       pure i
-
+      
     let newUserData = UserData "default" ["nopass"] []
 
     let cs =
