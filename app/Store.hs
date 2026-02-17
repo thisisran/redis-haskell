@@ -9,17 +9,14 @@ module Store
   , updateMulti
   , addMultiCommand
   , resetMultiCommands
+  , getStream
   , getData
   , getDataEntry
-  , setDataEntry
-  , addWaiterOnce
-  , getStreamTEMP
-  , getWaiterEntry
   , delDataEntry
-  , delWaiterEntry
+  , setDataEntry
   , newMemoryStore
   , getStreams
-  , getStream
+  , getTVStreams
   , setStreams
   , getRole
   , MonadStore
@@ -66,15 +63,22 @@ import Network.Simple.TCP (Socket)
 
 import qualified Data.ByteString as BS
 
-type StreamFilter = M.Map EntryId RedisStreamValues -> Maybe (EntryId, RedisStreamValues)
-getStreamTEMP :: StoreData -> BS.ByteString -> StreamFilter -> (Maybe (EntryId, RedisStreamValues), RedisStream, RedisStreams)
-getStreamTEMP store streamID filter = let streams = M.lookup "streams" store
-                                          s@(Streams stream)  = maybe (Streams HM.empty) (\(StoreEntry (StoreStreams s) Nothing) -> s) streams
-                                          os@(Stream oldStream) = fromMaybe (Stream M.empty) $ HM.lookup streamID stream
-                                      in (filter oldStream, os, s)
+
+
+type StreamFilter = Stream -> Maybe (EntryId, [BSPair])
+
+getStream :: Streams -> BS.ByteString -> StreamFilter -> (Maybe (EntryId, [BSPair]), Stream, Streams)
+getStream streams streamID filter = let stream = fromMaybe M.empty $ HM.lookup streamID streams
+                                    in (filter stream, stream, streams)
+
 
 class (Monad m, MonadIO m) => MonadStore m where
-  getData :: m TVStore
+  getData :: m (TVar StoreData)
+  getTVStreams :: m (TVar Streams)
+  getStreams :: m Streams
+  getStreams = do
+    tvStreams <- getTVStreams
+    liftIO $ readTVarIO tvStreams
   setDataEntry :: BS.ByteString -> StoreEntry -> m ()
   setDataEntry key value = do
     tv <- getData
@@ -83,20 +87,11 @@ class (Monad m, MonadIO m) => MonadStore m where
   getDataEntry key = do
     tv <- getData
     liftIO $ M.lookup key <$> readTVarIO tv
-  getStream :: BS.ByteString -> (M.Map EntryId RedisStreamValues -> Maybe (EntryId, RedisStreamValues)) -> m (Maybe (EntryId, RedisStreamValues), RedisStream, RedisStreams)
-  getStream streamID filter = do
-    s@(Streams streams) <- getStreams
-    let os@(Stream oldStream) = fromMaybe (Stream M.empty) (HM.lookup streamID streams)
-    
-    pure (filter oldStream, os, s)
-  getStreams :: m RedisStreams
-  getStreams = do
-    streams <- getDataEntry "streams"
-    pure $ case streams of
-      Just (StoreEntry (StoreStreams s) Nothing) -> s
-      _ -> Streams HM.empty
-  setStreams :: StoreEntry -> m ()
-  setStreams = setDataEntry "streams"
+  setStreams :: Streams -> m ()
+  setStreams newStreams = do
+    tvStreams <- getTVStreams
+    liftIO . atomically $
+      modifyTVar' tvStreams (const newStreams)
   getPort :: m String
   getReplication :: m ReplicationInfo
   getReplicas :: m (TVar [Socket])
@@ -139,6 +134,7 @@ class (Monad m, MonadIO m) => MonadStore m where
 
 instance MonadStore ReplicaApp where
   getData = asks $ (.sData) . senvStore . renvShared
+  getTVStreams = asks $ (.sStreams) . senvStore . renvShared
   getPort = asks $ (.cfgPort) . senvConfig . renvShared
   getReplication = asks $ (.cfgReplication) . senvConfig . renvShared
   getReplicas = asks $ senvReplicas . renvShared
@@ -164,6 +160,7 @@ instance MonadStore ReplicaApp where
   
 instance MonadStore ClientApp where
   getData = asks $ (.sData) . senvStore . cenvShared
+  getTVStreams = asks $ (.sStreams) . senvStore . cenvShared
   getPort = asks $ (.cfgPort) . senvConfig . cenvShared
   getReplication = asks $ (.cfgReplication) . senvConfig . cenvShared
   getReplicas = asks (senvReplicas . cenvShared)
@@ -213,9 +210,6 @@ getChannelClients channel = do
     Just l -> pure l
     Nothing -> pure []
 
-getWaiters :: ClientApp (TVar (M.Map BS.ByteString IS.IntSet))
-getWaiters = asks $ (.sBLPopWaiters) . senvStore . cenvShared
-
 delDataEntry :: BS.ByteString -> ClientApp ()
 delDataEntry key = do
   tv <- getData
@@ -223,25 +217,6 @@ delDataEntry key = do
     m0 <- readTVar tv
     let m1 = M.delete key m0
     writeTVar tv m1
-
-delWaiterEntry :: BS.ByteString -> ClientApp ()
-delWaiterEntry key = do
-  tv <- getWaiters
-  liftIO . atomically $ do
-    m0 <- readTVar tv
-    let m1 = M.delete key m0
-    writeTVar tv m1
-
-addWaiterOnce :: BS.ByteString -> Int -> ClientApp ()
-addWaiterOnce k w = do
-  tv <- getWaiters
-  liftIO . atomically $
-    modifyTVar' tv (M.insertWith IS.union k (IS.singleton w))
-
-getWaiterEntry :: BS.ByteString -> ClientApp (Maybe IS.IntSet)
-getWaiterEntry key = do
-  tv <- getWaiters
-  liftIO $ M.lookup key <$> readTVarIO tv
 
 getReplicaOffset :: ReplicaApp Int
 getReplicaOffset = do
@@ -269,7 +244,7 @@ getClientReplication = asks $ (.cfgReplication) . ccfgShared . cenvConfig
 ---------
 
 newMemoryStore :: IO Store
-newMemoryStore = Store <$> newTVarIO M.empty <*> newTVarIO M.empty
+newMemoryStore = Store <$> newTVarIO M.empty <*> newTVarIO HM.empty
 
 ----------------------------------------------------------------------------------
 -- ClientState

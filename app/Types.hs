@@ -29,15 +29,12 @@ module Types
   , StoreValue (..)
   , StoreEntry (..)
   , Store (..)
-  , TVStore
   , StoreData
   , ClientState (..)
   , Response (..)
-  , RedisStreamValues
-  , RedisStream
-  , RedisStreams
-  , Stream (..)
-  , Streams (..)
+  , BSPair
+  , Stream
+  , Streams
   , runReplicaApp
   , runClientApp
   , SharedConfig (..)
@@ -207,36 +204,28 @@ data RangeEntryId = RangeMinusPlus
                   | RangeEntryId !Word64 !Word64
                   deriving (Eq, Show)
 
-newtype Stream a    = Stream (M.Map EntryId a)
-                      deriving (Eq, Show)
-newtype Streams n a = Streams (HM.HashMap n (Stream a))
-                      deriving (Eq, Show)
-
-type RedisStreamValue = (BS.ByteString, BS.ByteString)
-type RedisStreamValues = [RedisStreamValue]
-type RedisStream = Stream RedisStreamValues
-type RedisStreams = Streams BS.ByteString RedisStreamValues
-
 newtype ExDurationMs = ExDurationMs Integer deriving (Eq, Show)  -- in miliseconds
 newtype ExRef = ExRef Integer deriving (Eq, Show)
 
 data StoreValue = StoreString BS.ByteString
                 | StoreList [BS.ByteString]
-                | StoreStreams RedisStreams
                 deriving (Eq, Show)
 
 data StoreEntry = StoreEntry
-  { val :: StoreValue,
-    expiresAt :: Maybe (ExDurationMs, ExRef)
+  { val :: StoreValue
+  , expiresAt :: Maybe (ExDurationMs, ExRef)
   } deriving (Eq, Show)
 
 type StoreData = M.Map BS.ByteString StoreEntry
-type TVStore = TVar StoreData
+
+type BSPair = (BS.ByteString, BS.ByteString)
+type Stream = M.Map EntryId [BSPair]
+type Streams = HM.HashMap BS.ByteString Stream
 
 data Store = Store
-  { sData :: TVStore
-  , sBLPopWaiters :: TVar (M.Map BS.ByteString IS.IntSet)
-  }
+  { sData :: TVar StoreData
+  , sStreams :: TVar Streams
+  } deriving stock (Eq)
 
 data ReplicationCmdOption = WantMaster
                           | WantSlave { rcoHost :: !String, rcoPort :: !String }
