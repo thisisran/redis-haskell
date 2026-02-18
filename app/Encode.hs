@@ -58,4 +58,5 @@ encodeSimpleError RErrAuthInvalidUserName _ = "-WRONGPASS invalid username-passw
 encodeSimpleError RErrAuthServerAuthUserNotFound _ = "-ERR Server is authenticated but user not found.\r\n"
 encodeSimpleError RErrAuthRequired _ = "-NOAUTH Authentication required\r\n"
 encodeSimpleError RErrPopWrongValueType _ = "-" <> "WRONGTYPE " <> "Operation against a key holding the wrong kind of value\r\n"
-encodeSimpleError RErrSubUnauthorizedCmd cmdName = "-" <> "ERR " <> "Can't execute '" <> cmdName <> "' when one or more subscriptions exist" <> "\r\n"
+encodeSimpleError RErrSubUnauthorizedCmd cmdName = "-" <> "ERR " <> "Can't execute '" <> cmdName <> "' when one or more subscriptions exist\r\n"
+encodeSimpleError RErrUnknownError cmdName = "-" <> "ERR " <> "Unknown error occured in '" <> cmdName

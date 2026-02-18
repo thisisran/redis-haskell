@@ -8,6 +8,9 @@ module Command
   where
 
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Except (throwError)
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
 import Control.Monad.Reader (asks)
 import Control.Monad.State.Strict (gets, modify')
 import Control.Monad.Trans.Maybe (runMaybeT, hoistMaybe)
@@ -345,26 +348,22 @@ xreadCommand keysIds Nothing = do
 incrCommand :: (MonadStore m) => BS.ByteString -> m Response
 incrCommand key = do
   tv <- getData
-  incrResult <- liftIO . atomically $ do
-    curr <- readTVar tv
-    case M.lookup key curr of
-      Nothing -> do
-        let nextVal = 1
-        writeTVar tv (M.insert key (StoreEntry (StoreString "1") Nothing) curr)
-        pure $ Just nextVal
-      Just (StoreEntry (StoreString v) Nothing) -> case U.bsToInt v of
-        Nothing -> pure Nothing
-        Just i -> do
-          let nextVal = i + 1
-          writeTVar tv (M.insert key (StoreEntry (StoreString $ BS8.pack $ show nextVal) Nothing) curr)
-          pure $ Just nextVal
-      _ -> pure Nothing
+  result <- liftIO . atomically . runExceptT $ do
+    curr <- lift $ readTVar tv
 
-  case incrResult of
-    Nothing -> pure $ RspNormal { resp = encodeSimpleError RErrIncrNotIntegerOrRange mempty, cmdName = "INCR" }
-    Just nextVal -> pure $ RspContinue { resp = encodeInteger nextVal
-                                       , effect = EffUpdateReplica ["INCR", key]
-                                       , cmdName = "INCR" }
+    nextVal <- case M.lookup key curr of
+      Nothing -> pure 1
+      Just (StoreEntry (StoreString v) Nothing) ->
+        maybe (throwError RErrIncrNotIntegerOrRange) (pure . (+ 1)) (U.bsToInt v)
+      _ -> throwError RErrIncrNotIntegerOrRange
+
+    let newEntry = StoreEntry (StoreString $ BS8.pack $ show nextVal) Nothing
+    lift $ writeTVar tv (M.insert key newEntry curr)
+    pure nextVal
+
+  pure $ case result of
+    Left err -> RspNormal { resp = encodeSimpleError err mempty, cmdName = "INCR" }
+    Right nextVal -> RspContinue { resp = encodeInteger nextVal, effect = EffUpdateReplica ["INCR", key], cmdName = "INCR" }
 
 execCommand :: ClientApp Response
 execCommand = do
@@ -627,30 +626,35 @@ zscoreCommand name member = do
 zremCommand :: BS.ByteString -> BS.ByteString -> ClientApp Response
 zremCommand name member = do
   (ZSet scoreMap memberDict) <- getZSet name
-  case HM.lookup member memberDict of
-    Just score ->
-      let updatedMemberDict = HM.delete member memberDict
-       in case M.lookup score scoreMap of
-            Just memberSet -> do
-              let newMap = M.alter (Just . S.delete member . fromMaybe S.empty) score scoreMap
-              tv <- getZSets
-              liftIO . atomically $
-                modifyTVar' tv $
-                  HM.alter (Just . const (ZSet newMap updatedMemberDict) . fromMaybe (ZSet M.empty HM.empty)) name
-              pure $ RspNormal { resp = encodeInteger 1, cmdName = "ZREM" }
-            Nothing -> pure $ RspNormal { resp = encodeInteger 0, cmdName = "ZREM" }
+  tv <- getZSets
+  maybeVal <- runMaybeT $ do
+    score <- hoistMaybe $ HM.lookup member memberDict
+    _ <- hoistMaybe $ M.lookup score scoreMap
+    let updatedMemberDict = HM.delete member memberDict
+    let newMap = M.adjust (S.delete member) score scoreMap
+    liftIO . atomically $
+      modifyTVar' tv $ HM.alter (Just . const (ZSet newMap updatedMemberDict) . fromMaybe (ZSet M.empty HM.empty)) name
+    pure 1
+
+  case maybeVal of
+    Just count -> pure $ RspNormal { resp = encodeInteger count, cmdName = "ZREM" }
     Nothing -> pure $ RspNormal { resp = encodeInteger 0, cmdName = "ZREM" }
 
 geoAddCommand :: BS.ByteString -> Double -> Double -> BS.ByteString -> ClientApp Response
 geoAddCommand name longitude latitude member = do
-  if longitude >= 180 || longitude <= -180
-    then pure $ RspNormal { resp = encodeSimpleError RErrGeoAddLongRange mempty, cmdName = "GEOADD" }
-    else
-      if latitude >= 85.05112878 || latitude <= -85.05112878
-        then pure $ RspNormal { resp = encodeSimpleError RErrGeoAddLatRange mempty, cmdName = "GEOADD" }
-        else do
-          zaddCommand name (U.interleaveGeo latitude longitude) member >>= \case
-            (RspNormal { resp = resp }) -> pure $ RspNormal { resp = encodeInteger 1, cmdName = "GEOADD" }
+  resp <- runExceptT $ do
+    if longitude > 180 || longitude < -180
+      then throwError RErrGeoAddLongRange
+      else
+        if latitude > 85.05112878 || latitude < -85.05112878
+          then throwError RErrGeoAddLatRange
+          else do
+            lift (zaddCommand name (U.interleaveGeo latitude longitude) member) >>= \case
+              (RspNormal { resp = resp }) -> pure $ RspNormal { resp = resp, cmdName = "GEOADD" }
+              _ -> throwError RErrUnknownError
+  pure $ case resp of
+    Right resp -> resp
+    Left err -> RspNormal { resp = encodeSimpleError err mempty, cmdName = "GEOADD" }
 
 geoPosCommand :: BS.ByteString -> [BS.ByteString] -> ClientApp Response
 geoPosCommand name members = do
@@ -728,26 +732,31 @@ authCommand userName password = do
   let encodedPass = (B16.encode . SHA256.hash) password
   UserData {name = user, flags = fl, passwords = ps} <- gets userData
   tvUserPass <- asks $ senvAuthUsers . cenvShared
-  userPassMap <- liftIO $ readTVarIO tvUserPass
   tvServerAuth <- asks $ senvIsAuth . cenvShared
-  isServerAuth <- liftIO $ readTVarIO tvServerAuth
-  if isServerAuth
-    then case HM.lookup userName userPassMap of
-      Just serverPass ->
-        if serverPass == encodedPass
-          then do
-            let newPasswords = ps ++ [encodedPass]
-            modify' (\cs -> cs {isAuth = True, userData = UserData {name = user, flags = fl, passwords = newPasswords}})
-            pure $ RspNormal { resp = encodeSimpleString "OK", cmdName = "AUTH" }
-          else pure $ RspNormal { resp = encodeSimpleError RErrAuthInvalidUserName mempty, cmdName = "AUTH" }
-      Nothing -> pure $ RspNormal { resp = encodeSimpleError RErrAuthServerAuthUserNotFound mempty, cmdName = "AUTH" }
-    else do
-      if user == userName && elem encodedPass ps
+
+  resp <- runExceptT $ do
+    isServerAuth <- liftIO $ readTVarIO tvServerAuth
+    if isServerAuth
+      then do
+        userPassMap <- liftIO $ readTVarIO tvUserPass
+        case HM.lookup userName userPassMap of
+          Just serverPass ->
+            if serverPass == encodedPass
+              then do
+                let newPasswords = ps ++ [encodedPass]
+                modify' (\cs -> cs {isAuth = True, userData = UserData {name = user, flags = fl, passwords = newPasswords}})
+                pure $ encodeSimpleString "OK"
+              else throwError RErrAuthInvalidUserName
+          Nothing -> throwError RErrAuthServerAuthUserNotFound
+      else do
+        if user == userName && elem encodedPass ps
         then do
           modify' (\cs -> cs {isAuth = True}) -- this client is now authcenticated
-          pure $ RspNormal { resp = encodeSimpleString "OK", cmdName = "AUTH" }
-        else do
-          pure $ RspNormal { resp = encodeSimpleError RErrAuthInvalidUserName mempty, cmdName = "AUTH" }
+          pure $ encodeSimpleString "OK"
+        else throwError RErrAuthInvalidUserName
+  case resp of
+    Right resp -> pure $ RspNormal { resp = resp, cmdName = "AUTH" }
+    Left err -> pure $ RspNormal { resp = encodeSimpleError err mempty, cmdName = "AUTH" }
 
 isAuthorizedCmd :: Command -> ClientApp Bool
 isAuthorizedCmd cmd = do

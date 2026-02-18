@@ -131,6 +131,7 @@ data RespError = RErrXAddGtThan0
                | RErrAuthRequired
                | RErrSubUnauthorizedCmd
                | RErrPopWrongValueType
+               | RErrUnknownError
                deriving stock (Eq, Show)
 
 data TCPReceivedResult = TCPResultFull !BS.ByteString !BS.ByteString
