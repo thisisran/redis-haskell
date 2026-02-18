@@ -6,6 +6,7 @@ module Types
   , Command (..)
   , DistUnit (..)
   , SubsCred (..)
+  , AppError (..)
   , AclSubCmd (..)
   , UserFlags
   , UserPasswords
@@ -291,12 +292,17 @@ data ClientEnv = ClientEnv
 
 data ClientState = ClientState
   { multi             :: !Bool
-  , multiList         :: [ClientApp (Either BS.ByteString Response)]
+  , multiList         :: [ClientApp Response]
   , subscribeMode     :: !Bool
   , subscribeChannels :: !(S.Set BS.ByteString)
   , userData          :: !UserData
   , isAuth            :: !Bool
   }
+
+data AppError = ErrNetwork !BS.ByteString
+              | ErrParser !BS.ByteString
+              | ErrInternal !BS.ByteString
+              deriving stock (Eq, Show)
 
 data SubsCred = NotSubsCmd !BS.ByteString
               | SubscribeCmd
@@ -311,9 +317,6 @@ newtype ReplicaApp a = App { unReplicaApp :: ReaderT ReplicaEnv IO a }
 
 newtype ClientApp a = ClientApp { unClientApp :: StateT ClientState (ReaderT ClientEnv IO) a }
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader ClientEnv, MonadState ClientState)
-
--- newtype App a = App { unApp :: StateT ClientState (ReaderT Store IO) a}
---   deriving (Functor, Applicative, Monad, MonadIO, MonadState ClientState, MonadReader Store)
 
 runReplicaApp  :: ReplicaEnv -> ReplicaApp a -> IO a
 runReplicaApp env = (`runReaderT` env) . unReplicaApp

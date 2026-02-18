@@ -40,6 +40,8 @@ module Store
   , addSubChannel
   ) where
 
+import Control.Monad.Trans.Except (ExceptT (..))
+
 import Control.Concurrent.STM (atomically, TVar, readTVar, writeTVar, newTVarIO, readTVarIO, modifyTVar', modifyTVar)
 
 import Control.Monad (when)
@@ -184,6 +186,17 @@ instance MonadStore ClientApp where
           pure (ZSet newSetScoreMap newSetMemberDict)
   getZSets = asks $ senvSets . cenvShared
 
+instance MonadStore m => MonadStore (ExceptT e m) where
+  getData = lift getData
+  getTVStreams = lift getTVStreams
+  getPort = lift getPort
+  getReplication = lift getReplication
+  getReplicas = lift getReplicas
+  getReplicaSentOffset = lift getReplicaSentOffset
+  setReplicaSentOffset = lift . setReplicaSentOffset
+  getZSet = lift . getZSet
+  getZSets = lift getZSets
+
 addChannelSubcriber :: BS.ByteString -> Socket -> ClientApp ()
 addChannelSubcriber channel sub = do
   tv <- asks $ senvChannels . cenvShared
@@ -271,7 +284,7 @@ addSubChannel channel = do
 updateMulti :: Bool -> ClientApp ()
 updateMulti state = modify' (\cs -> cs { multi = state })
 
-addMultiCommand :: ClientApp (Either BS.ByteString Response) -> ClientApp ()
+addMultiCommand :: ClientApp Response -> ClientApp ()
 addMultiCommand cmd = do
   ml <- gets (.multiList)
   modify' (\cs -> cs { multiList = ml ++ [cmd] })
@@ -282,5 +295,5 @@ resetMultiCommands = modify' (\cs -> cs { multiList = [] })
 getMulti :: ClientApp Bool
 getMulti = gets (.multi)
 
-getMultiList :: ClientApp [ClientApp (Either BS.ByteString Response)]
+getMultiList :: ClientApp [ClientApp Response]
 getMultiList = gets (.multiList)
