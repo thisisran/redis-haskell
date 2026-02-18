@@ -302,6 +302,7 @@ data ClientState = ClientState
 data AppError = ErrNetwork !BS.ByteString
               | ErrParser !BS.ByteString
               | ErrInternal !BS.ByteString
+              | ErrRDBParser !BS.ByteString
               deriving stock (Eq, Show)
 
 data Effect = EffUpdateReplica ![BS.ByteString]

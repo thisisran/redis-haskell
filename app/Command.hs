@@ -772,16 +772,16 @@ handleSubsMode resp = do
       (RspNormal { resp = r }) -> liftIO $ send sock r
       (RspContinue { resp = r, effect = ef }) -> liftIO (send sock r) >> applyEffect ef
       (RspSubs resp) -> liftIO (send sock resp)
-      (RspContinueSubs { resp = r }) -> liftIO (send sock r)
+      (RspContinueSubs { resp = r, effect = ef }) -> liftIO (send sock r) >> applyEffect ef
       RspPing -> liftIO (send sock $ encodeSimpleString "PONG")
 
 unsubcribeCommand :: BS.ByteString -> ClientApp Response
 unsubcribeCommand channel = do
   socket <- getSocket
-  setSubscribed False
   removeSubChannel channel
   removeChannelSubscriber channel socket
   remaining <- getSubChannels
+  setSubscribed (not $ S.null remaining)
   pure $ RspSubs $ encodeArray False [encodeBulkString "unsubscribe", encodeBulkString channel, encodeInteger (S.size remaining)]
 
 runClientCommand :: Command -> ClientApp ()

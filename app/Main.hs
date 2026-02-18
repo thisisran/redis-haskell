@@ -2,6 +2,9 @@
 
 module Main (main) where
 
+
+import Control.Monad.Trans.Except (runExceptT)
+
 import CliParser
 import qualified Control.Concurrent.Async as SA
 import Control.Concurrent.STM
@@ -19,7 +22,9 @@ import Network.Simple.TCP (HostPreference (HostAny), closeSock, recv, send, serv
 import RDBParser
 import RedisParser
 import System.FilePath ((</>))
-import System.IO (BufferMode (NoBuffering), IOMode (ReadMode), hPutStrLn, hSetBuffering, stderr, stdout, withBinaryFile)
+import Control.Exception (catchJust)
+import System.IO (BufferMode (NoBuffering), Handle, IOMode (ReadMode), hPutStrLn, hSetBuffering, stderr, stdout, withBinaryFile)
+import System.IO.Error (ioeGetErrorType, isDoesNotExistErrorType)
 import Types
 import qualified Utilities as U
 
@@ -61,6 +66,24 @@ initSharedEnv store sharedCfg = do
                    , senvIsAuth = newIsAuth
                    , senvAuthUsers = newAuthUsers }
 
+readDBFile :: Store -> Handle -> IO (Either AppError ())
+readDBFile store h = do
+  magicWord <- BS.hGet h 5
+  redisVersion <- BS.hGet h 4
+  runExceptT $ consumeMetadata h
+  runExceptT $ consumeDB h (sData store)
+
+loadRdbFile :: FilePath -> Store -> IO ()
+loadRdbFile path store = do
+  rdbResultOrMissing <- liftIO $ catchJust (\e -> if isDoesNotExistErrorType (ioeGetErrorType e) then Just () else Nothing)
+                                           (Right <$> withBinaryFile path ReadMode (readDBFile store))
+                                           (\() -> pure (Left ()))   -- file missing
+
+  case rdbResultOrMissing of
+    Left () -> liftIO $ putStrLn "No RDB file found, starting with an empty DB"
+    Right (Right _) -> liftIO $ putStrLn "RDB File loaded successfully"
+    Right (Left (ErrRDBParser err)) -> liftIO $ hPutStrLn stderr $ "RDB File parsing failed, starting an empty DB. Error: " <> show err
+
 main :: IO ()
 main = do
   hSetBuffering stdout NoBuffering
@@ -75,7 +98,7 @@ main = do
   store <- newMemoryStore
 
   -- Here, in case of failure, the store will remain empty
-  CE.try (withBinaryFile (dir </> rdbFileName) ReadMode (readDBFile store)) :: IO (Either CE.IOException ())
+  loadRdbFile (dir </> rdbFileName) store
 
   repID <- U.randomAlphaNum40BS
   let sharedCfg = case cliReplication cfgCli of
@@ -112,8 +135,7 @@ main = do
                                  , ccfgSocket = socket
                                  , ccfgShared = sharedCfg }
 
-    let env = ClientEnv { cenvShared = sharedEnv
-                        ,  cenvConfig = clientCfg }
+    let env = ClientEnv { cenvShared = sharedEnv, cenvConfig = clientCfg }
 
     let cs = ClientState { multi = False
                          , multiList = []
@@ -124,9 +146,3 @@ main = do
 
     runClientApp env cs handleClientConnection
     closeSock socket
-  where
-    readDBFile store h = do
-      magicWord <- BS.hGet h 5
-      redisVersion <- BS.hGet h 4
-      consumeMetadata h
-      consumeDB h (sData store)
