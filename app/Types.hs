@@ -214,8 +214,8 @@ data StoreValue = StoreString BS.ByteString
                 deriving (Eq, Show)
 
 data StoreEntry = StoreEntry
-  { val :: StoreValue
-  , expiresAt :: Maybe (ExDurationMs, ExRef)
+  { val :: !StoreValue
+  , expiresAt :: !(Maybe (ExDurationMs, ExRef))
   } deriving (Eq, Show)
 
 type StoreData = M.Map BS.ByteString StoreEntry
@@ -225,8 +225,8 @@ type Stream = M.Map EntryId [BSPair]
 type Streams = HM.HashMap BS.ByteString Stream
 
 data Store = Store
-  { sData :: TVar StoreData
-  , sStreams :: TVar Streams
+  { sData :: !(TVar StoreData)
+  , sStreams :: !(TVar Streams)
   } deriving stock (Eq)
 
 data ReplicationCmdOption = WantMaster
@@ -253,7 +253,7 @@ data SharedConfig = SharedConfig
 
 type ZSetMemberDict = (HM.HashMap BS.ByteString Double)
 type ZSetScoreMap = (M.Map Double (S.Set BS.ByteString))
-data ZSet = ZSet ZSetScoreMap ZSetMemberDict
+data ZSet = ZSet !ZSetScoreMap !ZSetMemberDict
 type ZSets = TVar (HM.HashMap BS.ByteString ZSet)
 
 type UserFlags = [BS.ByteString]
@@ -267,12 +267,12 @@ data SharedEnv = SharedEnv
   { senvStore                :: !Store
   , senvSets                 :: !ZSets
   , senvConfig               :: !SharedConfig
-  , senvReplicas             :: TVar [Socket]
-  , senvReplicaSentOffset    :: TVar Int -- byte count of commands sent to replicas
-  , senvCompleteReplicaCount :: TVar Int
-  , senvChannels             :: TVar (HM.HashMap BS.ByteString [Socket])
-  , senvIsAuth               :: TVar Bool
-  , senvAuthUsers            :: TVar (HM.HashMap BS.ByteString BS.ByteString)
+  , senvReplicas             :: !(TVar [Socket])
+  , senvReplicaSentOffset    :: !(TVar Int) -- byte count of commands sent to replicas
+  , senvCompleteReplicaCount :: !(TVar Int)
+  , senvChannels             :: !(TVar (HM.HashMap BS.ByteString [Socket]))
+  , senvIsAuth               :: !(TVar Bool)
+  , senvAuthUsers            :: !(TVar (HM.HashMap BS.ByteString BS.ByteString))
   }
 
 data ClientConfig = ClientConfig
@@ -283,7 +283,7 @@ data ClientConfig = ClientConfig
 
 data ReplicaEnv = ReplicaEnv
   { renvShared        :: !SharedEnv
-  , renvReplicaOffset :: TVar Int
+  , renvReplicaOffset :: !(TVar Int)
   }
 
 data ClientEnv = ClientEnv
