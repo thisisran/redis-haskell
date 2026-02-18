@@ -5,7 +5,6 @@ module Types
   ( RParserResult (..)
   , Command (..)
   , DistUnit (..)
-  , SubsCred (..)
   , AppError (..)
   , AclSubCmd (..)
   , UserFlags
@@ -13,6 +12,7 @@ module Types
   , UserData (..)
   , StringParserResult (..)
   , RespError (..)
+  , Effect (..)
   , TCPClientAckResult (..)
   , TCPReceivedResult (..)
   , ConfigArgs (..)
@@ -304,13 +304,15 @@ data AppError = ErrNetwork !BS.ByteString
               | ErrInternal !BS.ByteString
               deriving stock (Eq, Show)
 
-data SubsCred = NotSubsCmd !BS.ByteString
-              | SubscribeCmd
-              | PingCmd
-              deriving stock (Eq, Show)
+data Effect = EffUpdateReplica ![BS.ByteString]
+            | EffPublishChannel !BS.ByteString !BS.ByteString
+            | EffSnapshot
 
-data Response = RspNormal !BS.ByteString SubsCred
-              | RspContinue { resp :: !BS.ByteString, afterOp :: ClientApp (), subsCred :: SubsCred }
+data Response = RspNormal { resp :: !BS.ByteString, cmdName :: !BS.ByteString }
+              | RspSubs !BS.ByteString
+              | RspContinue { resp :: !BS.ByteString, effect :: Effect, cmdName :: !BS.ByteString }
+              | RspContinueSubs { resp :: !BS.ByteString, effect :: Effect }
+              | RspPing
 
 newtype ReplicaApp a = App { unReplicaApp :: ReaderT ReplicaEnv IO a }
   deriving newtype (Functor, Applicative, Monad, MonadIO, MonadReader ReplicaEnv, MonadUnliftIO)

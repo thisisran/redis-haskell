@@ -18,6 +18,7 @@ import Network.Simple.TCP (Socket, send)
 
 import Data.Maybe (fromMaybe)
 import Data.List (delete, foldl')
+import Data.Foldable (for_)
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -35,6 +36,17 @@ import Store
 import Encode
 
 import qualified Utilities as U
+
+applyEffect :: Effect -> ClientApp ()
+applyEffect (EffUpdateReplica cmd) = updateReplicas cmd
+applyEffect EffSnapshot = do
+  socket <- getSocket
+  case U.decodeRdbBase64 U.emptyRdbFile of
+    Right x -> liftIO $ send socket $ encodeRdbFile x
+applyEffect (EffPublishChannel channel msg) = do
+  clients <- getChannelClients channel
+  for_ clients $ \s -> send s payload
+  where payload = encodeArray True ["message", channel, msg]
 
 updateReplicas :: (MonadStore m) => [BS.ByteString] -> m ()
 updateReplicas command = do
@@ -60,7 +72,7 @@ setCommand key val ex = do
         Just (EX n) -> ["ex", (BS8.pack . show) n]
         Just (PX n) -> ["px", (BS8.pack . show) n]
 
-  pure $ RspContinue { resp = encodeSimpleString "OK", afterOp = updateReplicas $ ["SET", key, val] ++ exCommand, subsCred = NotSubsCmd "SET" }
+  pure $ RspContinue { resp = encodeSimpleString "OK", effect = EffUpdateReplica $ ["SET", key, val] ++ exCommand, cmdName = "SET" }
   where
     handleExpiry Nothing timeRef = StoreEntry (StoreString val) Nothing
     handleExpiry (Just (EX ex)) timeRef = StoreEntry (StoreString val) $ Just (ExDurationMs (fromIntegral $ ex * 1_000), ExRef timeRef)
@@ -70,15 +82,15 @@ getCommand :: BS.ByteString -> ClientApp Response
 getCommand key = do
   tv <- getDataEntry key
   case tv of
-    Nothing -> pure $ RspNormal encodeNullBulkString (NotSubsCmd "GET")
-    Just (StoreEntry (StoreString v) Nothing) -> pure $ RspNormal (encodeBulkString v) (NotSubsCmd "GET")
+    Nothing -> pure $ RspNormal { resp = encodeNullBulkString, cmdName = "GET" }
+    Just (StoreEntry (StoreString v) Nothing) -> pure $ RspNormal { resp = encodeBulkString v, cmdName = "GET" }
     Just (StoreEntry (StoreString v) (Just (ExDurationMs exDur, ExRef exRef))) -> do
       hasPassed <- liftIO $ U.hasElapsedSince exDur exRef
       if hasPassed
         then do
           delDataEntry key
-          pure $ RspNormal encodeNullBulkString (NotSubsCmd "GET")
-        else pure $ RspNormal (encodeBulkString v) (NotSubsCmd "GET")
+          pure $ RspNormal { resp = encodeNullBulkString, cmdName = "GET" }
+        else pure $ RspNormal { resp = encodeBulkString v, cmdName = "GET" }
 
 pushCommand :: (MonadStore m) => BS.ByteString -> [BS.ByteString] -> PushCommand -> m Response
 pushCommand key values pushType = do
@@ -100,12 +112,12 @@ pushCommand key values pushType = do
 
   case pushResult of
     Nothing ->
-      pure $ RspNormal "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n" (NotSubsCmd pushArgs)
+      pure $ RspNormal { resp = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", cmdName = pushArgs }
     Just newLen ->
       pure $ RspContinue
         { resp = encodeInteger newLen
-        , afterOp = updateReplicas $ [pushArgs, key] ++ values
-        , subsCred = NotSubsCmd pushArgs
+        , effect = EffUpdateReplica $ [pushArgs, key] ++ values
+        , cmdName = pushArgs
         }
   where newItems RightPushCmd = values
         newItems LeftPushCmd = reverse values
@@ -116,9 +128,9 @@ lrangeCommand :: BS.ByteString -> Int -> Int -> ClientApp Response
 lrangeCommand key start stop = do
   val <- getDataEntry key
   case val of
-    Nothing -> pure $ RspNormal (encodeArray True []) (NotSubsCmd "LRANGE")
+    Nothing -> pure $ RspNormal { resp = encodeArray True [], cmdName = "LRANGE" }
     Just (StoreEntry (StoreList vs) Nothing) -> do
-      pure $ RspNormal (encodeArray True $ go vs (normStart start) (normStop stop)) (NotSubsCmd "LRANGE")
+      pure $ RspNormal { resp = encodeArray True $ go vs (normStart start) (normStop stop), cmdName = "LRANGE" }
       where
         itemCount = fromIntegral $ length vs
         go :: [BS.ByteString] -> Int -> Int -> [BS.ByteString]
@@ -138,21 +150,21 @@ llenCommand :: BS.ByteString -> ClientApp Response
 llenCommand key = do
   val <- getDataEntry key
   case val of
-    Nothing -> pure $ RspNormal (encodeInteger 0) (NotSubsCmd "LLEN")
-    Just (StoreEntry (StoreList v) Nothing) -> pure $ RspNormal (encodeInteger $ length v) (NotSubsCmd "LLEN")
+    Nothing -> pure $ RspNormal { resp = encodeInteger 0, cmdName = "LLEN" }
+    Just (StoreEntry (StoreList v) Nothing) -> pure $ RspNormal { resp = encodeInteger $ length v, cmdName = "LLEN" }
 
 applyLPopHelper :: TVar StoreData -> BS.ByteString -> Int -> STM Response
 applyLPopHelper tvData key count = do
     curr <- readTVar tvData
     case M.lookup key curr of
-      Nothing -> pure $ RspNormal encodeNullBulkString (NotSubsCmd "LPOP")
+      Nothing -> pure $ RspNormal { resp = encodeNullBulkString, cmdName = "LPOP" }
       Just (StoreEntry (StoreList v) Nothing)
-        | null v -> pure $ RspNormal encodeNullBulkString (NotSubsCmd "LPOP")
+        | null v -> pure $ RspNormal { resp = encodeNullBulkString, cmdName = "LPOP" }
         | otherwise -> do
             let normCount = min count (length v)
             writeTVar tvData (M.insert key (StoreEntry (StoreList (drop normCount v)) Nothing) curr)
-            pure $ RspContinue { resp = getPopped normCount v, afterOp = updateReplicas ["LPOP", key, (BS8.pack . show) count], subsCred = NotSubsCmd "LPOP" }
-      _ -> pure $ RspNormal (encodeSimpleError RErrPopWrongValueType mempty) (NotSubsCmd "LPOP")
+            pure $ RspContinue { resp = getPopped normCount v, effect = EffUpdateReplica ["LPOP", key, (BS8.pack . show) count], cmdName = "LPOP" }
+      _ -> pure $ RspNormal { resp = encodeSimpleError RErrPopWrongValueType mempty, cmdName = "LPOP" }
   where
     getPopped 1 (x : _) = encodeBulkString x
     getPopped popCount xs = encodeArray True (take popCount xs)
@@ -169,13 +181,13 @@ typeCommand key = do
     Nothing -> do
       streams <- getStreams
       case HM.lookup key streams of
-        Just _ -> pure $ RspNormal (encodeSimpleString "stream") (NotSubsCmd "TYPE")
-        Nothing -> pure $ RspNormal (encodeSimpleString "none") (NotSubsCmd "TYPE")
-    Just (StoreEntry (StoreString _) _) -> pure $ RspNormal (encodeSimpleString "string") (NotSubsCmd "TYPE")
-    Just (StoreEntry (StoreList _) _) -> pure $ RspNormal (encodeSimpleString "list") (NotSubsCmd "TYPE")
+        Just _ -> pure $ RspNormal { resp = encodeSimpleString "stream", cmdName = "TYPE" }
+        Nothing -> pure $ RspNormal { resp = encodeSimpleString "none", cmdName = "TYPE" }
+    Just (StoreEntry (StoreString _) _) -> pure $ RspNormal { resp = encodeSimpleString "string", cmdName = "TYPE" }
+    Just (StoreEntry (StoreList _) _) -> pure $ RspNormal { resp = encodeSimpleString "list", cmdName = "TYPE" }
 
 xaddCommand :: (MonadStore m) => BS.ByteString -> EntryId -> [BSPair] -> m Response
-xaddCommand streamID (EntryId 0 0) values = pure $ RspNormal (encodeSimpleError RErrXAddGtThan0 mempty) (NotSubsCmd "XADD")
+xaddCommand streamID (EntryId 0 0) values = pure $ RspNormal { resp = encodeSimpleError RErrXAddGtThan0 mempty, cmdName = "XADD" }
 xaddCommand streamID EntryGenNew values = liftIO U.nowMS >>= \now -> xaddCommand streamID (EntryGenSeq (fromIntegral now)) values
 xaddCommand streamID (EntryGenSeq mili) values = do
   streams <- getStreams
@@ -191,7 +203,7 @@ xaddCommand streamID entryID@(EntryId mili seq) values = do
     Nothing -> addNewEntry M.empty streams replicaRep
     Just (x, _) ->
       if x >= entryID
-        then pure $ RspNormal (encodeSimpleError RErrXaddEqSmallTargetItem mempty) (NotSubsCmd "XADD")
+        then pure $ RspNormal { resp = encodeSimpleError RErrXaddEqSmallTargetItem mempty, cmdName = "XADD" }
         else addNewEntry oldStream streams replicaRep
   where
     addNewEntry :: (MonadStore m) => Stream -> Streams -> [BS.ByteString] -> m Response
@@ -200,7 +212,7 @@ xaddCommand streamID entryID@(EntryId mili seq) values = do
       let newStream = M.insert entryID newEntry oldStream
       let newStreams = HM.insert streamID newStream streams
       setStreams newStreams
-      pure $ RspContinue { resp = encodeBulkString (U.entryIdToBS entryID), afterOp = updateReplicas replicaRep, subsCred = NotSubsCmd "XADD" }
+      pure $ RspContinue { resp = encodeBulkString (U.entryIdToBS entryID), effect = EffUpdateReplica replicaRep, cmdName = "XADD" }
     valuesToArray [] acc = acc
     valuesToArray ((key, value) : xs) acc = valuesToArray xs (acc ++ [key, value])
 
@@ -217,7 +229,7 @@ xrangeHelper streams key rangef (RangeEntryId mili1 mili2) (RangeEntryId seq1 se
   let (_, oldStream, _) = getStream streams key (const Nothing . M.filterWithKey (\_ _ -> True))
       allKeysValues = M.toAscList (U.range rangef (EntryId mili1 mili2) (EntryId seq1 seq2) oldStream)
       resp = parseKeysValues allKeysValues
-  in RspNormal resp (NotSubsCmd "XRANGE")
+  in RspNormal { resp = resp, cmdName = "XRANGE" }
   where
     parseKeysValues :: [(EntryId, [BSPair])] -> BS.ByteString
     parseKeysValues keysValues = "*" <> (BS8.pack . show . length) keysValues <> "\r\n"
@@ -230,24 +242,24 @@ xrangeCommand :: BS.ByteString -> RangeEntryId -> RangeEntryId -> ClientApp Resp
 xrangeCommand key mili RangeMinusPlus = do
   res <- xrangeEndHelper key (\_ _ -> True)
   case res of
-    Nothing -> pure $ RspNormal encodeNullArray (NotSubsCmd "XRANGE")
+    Nothing -> pure $ RspNormal { resp = encodeNullArray, cmdName = "XRANGE" }
     Just seq -> xrangeCommand key mili seq
 xrangeCommand key RangeMinusPlus seq = do
   streams <- getStreams
   let (filteredStream, _, _) = getStream streams key (M.lookupMin . M.filterWithKey (\_ _ -> True))
   case filteredStream of
-    Nothing -> pure $ RspNormal encodeNullArray (NotSubsCmd "XRANGE")
+    Nothing -> pure $ RspNormal { resp = encodeNullArray, cmdName = "XRANGE" }
     Just (EntryId m v, _) -> xrangeCommand key (RangeEntryId m v) seq
 xrangeCommand key (RangeMili mili) seq@(RangeEntryId seq1 seq2) = xrangeCommand key (RangeEntryId mili 0) seq
 xrangeCommand key mili@(RangeEntryId _ _) (RangeMili seq) = do
   res <- xrangeEndHelper key (\(EntryId m _) _ -> m == seq)
   case res of
-    Nothing -> pure $ RspNormal (encodeSimpleError RErrXRangeIDNonExisting mempty) (NotSubsCmd "XRANGE")
+    Nothing -> pure $ RspNormal { resp = encodeSimpleError RErrXRangeIDNonExisting mempty, cmdName = "XRANGE" }
     Just (RangeEntryId _ newEnd) -> xrangeCommand key mili (RangeEntryId seq newEnd)
 xrangeCommand key (RangeMili mili) (RangeMili seq) = do
   res <- xrangeEndHelper key (\(EntryId m _) _ -> m == seq)
   case res of
-    Nothing -> pure $ RspNormal (encodeSimpleError RErrXRangeIDNonExisting mempty) (NotSubsCmd "XRANGE")
+    Nothing -> pure $ RspNormal { resp = encodeSimpleError RErrXRangeIDNonExisting mempty, cmdName = "XRANGE" }
     Just (RangeEntryId _ newEnd) -> xrangeCommand key (RangeEntryId mili 0) (RangeEntryId seq newEnd)
 xrangeCommand key mili@(RangeEntryId _ _) seq@(RangeEntryId _ _) = do
   streams <- getStreams
@@ -285,15 +297,15 @@ xreadEntries streams keyIds = (hasEntries, normalizedIds)
         Nothing -> False
         Just endID ->
           case xrangeHelper streams streamID (<=) entryID endID of
-            (RspNormal streamResp _) -> streamResp /= "*0\r\n"
+            (RspNormal { resp = streamResp }) -> streamResp /= "*0\r\n"
             _ -> False
 
 applyReadCommand :: Streams -> KeysIds -> Response
 applyReadCommand streams keysIds =
   let streamResponses = go streams keysIds []
   in if null streamResponses
-       then RspNormal encodeNullArray (NotSubsCmd "XREAD")
-       else RspNormal ("*" <> (BS8.pack . show . length) streamResponses <> "\r\n" <> BS.concat streamResponses) (NotSubsCmd "XREAD")
+       then RspNormal { resp = encodeNullArray, cmdName = "XREAD" }
+       else RspNormal { resp = "*" <> (BS8.pack . show . length) streamResponses <> "\r\n" <> BS.concat streamResponses, cmdName = "XREAD" }
   where
     go :: Streams -> KeysIds -> [BS.ByteString] -> [BS.ByteString]
     go streams [] acc = reverse acc
@@ -301,7 +313,7 @@ applyReadCommand streams keysIds =
       let res = normRangeEnd streams stream_id (\_ _ -> True)
       in case res of
            Nothing -> go streams xs acc
-           Just seq -> let (RspNormal streamResp _) = xrangeHelper streams stream_id (<=) entry_id seq
+           Just seq -> let (RspNormal { resp = streamResp }) = xrangeHelper streams stream_id (<=) entry_id seq
                        in if streamResp == "*0\r\n"
                           then go streams xs acc
                           else go streams xs (("*2\r\n" <> encodeBulkString stream_id <> streamResp) : acc)
@@ -316,7 +328,7 @@ xreadCommand keysIds (Just timeout) = do
     else do
       toResp <- liftIO $ awaitWithTimeout (round (timeout * 1_000)) $ waitAction tvStreams normalizedIds
       case toResp of
-        Nothing -> pure $ RspNormal encodeNullArray (NotSubsCmd "XREAD")
+        Nothing -> pure $ RspNormal { resp = encodeNullArray, cmdName = "XREAD" }
         Just resp -> pure resp
   where
     waitAction :: TVar Streams -> KeysIds -> STM Response
@@ -349,12 +361,10 @@ incrCommand key = do
       _ -> pure Nothing
 
   case incrResult of
-    Nothing -> pure $ RspNormal (encodeSimpleError RErrIncrNotIntegerOrRange mempty) (NotSubsCmd "INCR")
-    Just nextVal -> pure $ RspContinue
-      { resp = encodeInteger nextVal
-      , afterOp = updateReplicas ["INCR", key]
-      , subsCred = NotSubsCmd "INCR"
-      }
+    Nothing -> pure $ RspNormal { resp = encodeSimpleError RErrIncrNotIntegerOrRange mempty, cmdName = "INCR" }
+    Just nextVal -> pure $ RspContinue { resp = encodeInteger nextVal
+                                       , effect = EffUpdateReplica ["INCR", key]
+                                       , cmdName = "INCR" }
 
 execCommand :: ClientApp Response
 execCommand = do
@@ -364,18 +374,18 @@ execCommand = do
     then do
       ml <- getMultiList
       if null ml
-        then pure $ RspNormal (encodeArray True []) (NotSubsCmd "EXEC")
+        then pure $ RspNormal { resp = encodeArray True [], cmdName = "EXEC" }
         else do
           res <- go ml []
           resetMultiCommands
-          pure $ RspNormal (encodeArray False res) (NotSubsCmd "EXEC")
-    else pure $ RspNormal (encodeSimpleError RErrExecNoMulti mempty) (NotSubsCmd "EXEC")
+          pure $ RspNormal { resp = encodeArray False res, cmdName = "EXEC" }
+    else pure $ RspNormal { resp = encodeSimpleError RErrExecNoMulti mempty, cmdName = "EXEC" }
   where go [] acc = pure acc
         go (x : xs) acc = do
            resp <- x
            case resp of
-                (RspNormal resp _) -> go xs (acc ++ [resp])
-                (RspContinue resp _ _) -> go xs (acc ++ [resp])
+                (RspNormal { resp = resp }) -> go xs (acc ++ [resp])
+                (RspContinue { resp = resp }) -> go xs (acc ++ [resp])
 
 discardCommand :: ClientApp Response
 discardCommand = do
@@ -384,8 +394,8 @@ discardCommand = do
     then do
       updateMulti False
       resetMultiCommands
-      pure $ RspNormal (encodeSimpleString "OK") (NotSubsCmd "DISCARD")
-    else pure $ RspNormal (encodeSimpleError RErrDiscardNoMulti mempty) (NotSubsCmd "DISCARD")
+      pure $ RspNormal { resp = encodeSimpleString "OK", cmdName = "DISCARD" }
+    else pure $ RspNormal { resp = encodeSimpleError RErrDiscardNoMulti mempty, cmdName = "DISCARD" }
 
 handleMultiCmd :: ClientApp Response -> ClientApp Response
 handleMultiCmd op = do
@@ -393,23 +403,23 @@ handleMultiCmd op = do
   if multi
     then do
       addMultiCommand op
-      pure $ RspNormal (encodeSimpleString "QUEUED") (NotSubsCmd mempty)
+      pure $ RspNormal { resp = encodeSimpleString "QUEUED", cmdName = "MultiCmdHandler" }
     else op
 
 infoCommand :: InfoRequest -> ClientApp Response
 infoCommand Replication = do
   role <- getRole
   case role of
-    Master repID repOffset -> pure $ RspNormal (masterResponse repID repOffset) (NotSubsCmd "INFO")
-    Slave roHost roPort -> pure $ RspNormal (encodeBulkString "# Replication\nrole:slave") (NotSubsCmd "INFO")
+    Master repID repOffset -> pure $ RspNormal { resp = masterResponse repID repOffset, cmdName = "INFO" }
+    Slave roHost roPort -> pure $ RspNormal { resp = encodeBulkString "# Replication\nrole:slave", cmdName = "INFO" }
   where
     masterResponse rID repOS = encodeBulkString $ "# Replication\nrole:master\nmaster_replid:" <> BS8.pack rID <> "\nmaster_repl_offset:" <> (BS8.pack . show) repOS
 
 replConfCommand :: ReplConfOptions -> ClientApp Response
 replConfCommand (ListeningPort port) = do
-  pure $ RspNormal (encodeSimpleString "OK") (NotSubsCmd "REPLCONF listening port")
+  pure $ RspNormal { resp = encodeSimpleString "OK", cmdName = "REPLCONF listening port" }
 replConfCommand (Capa capa) = do
-  pure $ RspNormal (encodeSimpleString "OK") (NotSubsCmd "REPLCONF Capa")
+  pure $ RspNormal { resp = encodeSimpleString "OK", cmdName = "REPLCONF Capa" }
 replConfCommand (AckWith offset) = do
   serverOffset <- getReplicaSentOffset
   if offset == serverOffset
@@ -419,14 +429,8 @@ replConfCommand (AckWith offset) = do
         current <- readTVar tvComplete
         writeTVar tvComplete $ current + 1
       current <- liftIO $ readTVarIO tvComplete
-      pure $ RspNormal mempty (NotSubsCmd "REPLCONF AckWith")
-    else pure $ RspNormal mempty (NotSubsCmd "REPLCONF AckWith")
-
-sendSnapshot :: ClientApp ()
-sendSnapshot = do
-  socket <- getSocket
-  case U.decodeRdbBase64 U.emptyRdbFile of
-    Right x -> liftIO $ send socket $ encodeRdbFile x
+      pure $ RspNormal { resp = mempty, cmdName = "REPLCONF AckWith" } -- TODO: potential code smell with resp = mempty
+    else pure $ RspNormal { resp = mempty, cmdName = "REPLCONF AckWith" }
 
 psyncCommand :: PSyncRequest -> ClientApp Response
 psyncCommand PSyncUnknown = do
@@ -435,8 +439,8 @@ psyncCommand PSyncUnknown = do
     Master repID _ -> do
       _sock <- getSocket
       addReplica _sock
-      pure $ RspContinue { resp = encodeSimpleString $ "FULLRESYNC " <> BS8.pack repID <> " 0", afterOp = sendSnapshot, subsCred = NotSubsCmd "PSYNC" }
-    _ -> pure $ RspNormal mempty (NotSubsCmd "PSYNC") -- A slave will never get a PSync command from a client
+      pure $ RspContinue { resp = encodeSimpleString $ "FULLRESYNC " <> BS8.pack repID <> " 0", effect = EffSnapshot, cmdName = "PSYNC" }
+    _ -> pure $ RspNormal { resp = mempty, cmdName = "PSYNC" } -- TODO: potential code smell? A slave will never get a PSync command from a client
 
 sendAckCommand :: Socket -> Int -> TVar Int -> IO ()
 sendAckCommand sock serverOffset tvCompleted = do
@@ -463,10 +467,9 @@ blpopCommand key timeout clientID = do
   tvStore <- asks $ (.sData) . senvStore . cenvShared
   toResp <- liftIO $ awaitWithTimeout timeout $ waitAction key clientID tvStore
   case toResp of
-    Nothing -> do
-      pure $ RspNormal encodeNullArray (NotSubsCmd "BLPOP")
-    Just (RspNormal resp _) -> pure $ RspNormal resp (NotSubsCmd "BLPOP")
-    Just (RspContinue resp afterOp _) -> pure $ RspContinue { resp = resp, afterOp = afterOp, subsCred = NotSubsCmd "BLPOP" }
+    Nothing -> pure $ RspNormal { resp = encodeNullArray, cmdName = "BLPOP" }
+    Just (RspNormal { resp = resp }) -> pure $ RspNormal { resp = resp, cmdName = "BLPOP" }
+    Just (RspContinue { resp = r, effect = ef }) -> pure $ RspContinue { resp = r, effect = ef, cmdName = "BLPOP" }
   where
     waitAction :: BS.ByteString -> Int -> TVar StoreData -> STM Response
     waitAction key clientID tvStore = do
@@ -475,8 +478,8 @@ blpopCommand key timeout clientID = do
         Nothing -> retry
         Just (StoreEntry (StoreList []) Nothing) -> retry
         Just (StoreEntry (StoreList (x : xs)) Nothing) -> applyLPopHelper tvStore key 1 >>= \case
-          (RspContinue resp op _) -> pure $ RspContinue { resp = encodeArray False [encodeBulkString key, resp], afterOp = op, subsCred = NotSubsCmd "BLPOP" }
-          (RspNormal resp _) -> pure $ RspNormal resp (NotSubsCmd "BLPOP")
+          (RspContinue { resp = resp, effect = effect }) -> pure $ RspContinue { resp = encodeArray False [encodeBulkString key, resp], effect = effect, cmdName = "BLPOP" }
+          (RspNormal { resp = resp }) -> pure $ RspNormal { resp = resp, cmdName = "BLPOP" }
 
 waitCommand :: Int -> Int -> ClientApp Response
 waitCommand reqReady timeout = do
@@ -498,9 +501,9 @@ waitCommand reqReady timeout = do
         liftIO . atomically $ do
           updateServer tvReplicaSentOS
         resCompRepCount <- liftIO $ readTVarIO tvCompRepCount
-        pure $ RspNormal (encodeInteger resCompRepCount) (NotSubsCmd "WAIT")
+        pure $ RspNormal { resp = encodeInteger resCompRepCount, cmdName = "WAIT" }
       Just resp -> pure resp
-    else pure $ RspNormal (encodeInteger $ length replicas) (NotSubsCmd "WAIT")
+    else pure $ RspNormal { resp = encodeInteger $ length replicas, cmdName = "WAIT" }
   where
     waitAction :: TVar Int -> TVar Int -> STM Response
     waitAction tvCompRepCount tvReplicaSentOS = do
@@ -508,7 +511,7 @@ waitCommand reqReady timeout = do
       if compRepCount >= reqReady
       then do
         updateServer tvReplicaSentOS
-        pure $ RspNormal (encodeInteger compRepCount) (NotSubsCmd "WAIT")
+        pure $ RspNormal { resp = encodeInteger compRepCount, cmdName = "WAIT" }
       else retry
     updateServer :: TVar Int -> STM ()
     updateServer tv = do
@@ -524,10 +527,10 @@ waitCommand reqReady timeout = do
 configCommand :: ConfigArgs -> ClientApp Response
 configCommand ConfigGetDir = do
   dir <- asks $ cfgDir . ccfgShared . cenvConfig
-  pure $ RspNormal (encodeArray True ["dir", BS8.pack dir]) (NotSubsCmd "CONFIG")
+  pure $ RspNormal { resp = encodeArray True ["dir", BS8.pack dir], cmdName = "CONFIG" }
 configCommand ConfigGetFileName = do
   fileName <- asks $ cfgRDBFileName . ccfgShared . cenvConfig
-  pure $ RspNormal (encodeArray True ["dbfilename", BS8.pack fileName]) (NotSubsCmd "CONFIG")
+  pure $ RspNormal { resp = encodeArray True ["dbfilename", BS8.pack fileName], cmdName = "CONFIG" }
 
 -- TODO: Filtering is VERY inefficient, redo at some point
 keysCommand :: BS.ByteString -> ClientApp Response
@@ -535,12 +538,12 @@ keysCommand "*" = do
   tvStore <- getData
   store <- liftIO $ readTVarIO tvStore
   let result = M.keys store
-  pure $ RspNormal (encodeArray True result) (NotSubsCmd "KEYS")
+  pure $ RspNormal { resp = encodeArray True result, cmdName = "KEYS" }
 keysCommand filter = do
   tvStore <- getData
   store <- liftIO $ readTVarIO tvStore
   let result = M.keys store
-  pure $ RspNormal (encodeArray True (foldl' foldme [] result)) (NotSubsCmd "KEYS")
+  pure $ RspNormal { resp = encodeArray True (foldl' foldme [] result), cmdName = "KEYS" }
   where
     foldme :: [BS.ByteString] -> BS.ByteString -> [BS.ByteString]
     foldme acc item = if go filter item then acc ++ [item] else acc
@@ -562,26 +565,19 @@ subscribeCommand channel = do
   addSubChannel channel
   currChannels <- getSubChannels
   addChannelSubcriber channel socket
-  pure $ RspNormal (encodeArray False [encodeBulkString "subscribe", encodeBulkString channel, encodeInteger $ length currChannels]) SubscribeCmd
+  pure $ RspSubs $ encodeArray False [encodeBulkString "subscribe", encodeBulkString channel, encodeInteger $ length currChannels]
 
 publishCommand :: BS.ByteString -> BS.ByteString -> ClientApp Response
 publishCommand channel msg = do
-  socket <- getSocket
   clientList <- getChannelClients channel
-  sendMessage clientList
-  pure $ RspNormal (encodeInteger $ length clientList) SubscribeCmd
-  where
-    sendMessage [] = pure ()
-    sendMessage (x : xs) = do
-      send x $ encodeArray True ["message", channel, msg]
-      sendMessage xs
+  pure $ RspContinueSubs { resp = encodeInteger (length clientList), effect = EffPublishChannel channel msg }
 
 zaddCommand :: BS.ByteString -> Double -> BS.ByteString -> ClientApp Response
 zaddCommand name score member = do
   oldCount <- getZSetMemberCount name member
   addMemberToZSet name score member
   currCount <- getZSetMemberCount name member
-  pure $ RspNormal (encodeInteger $ currCount - oldCount) (NotSubsCmd "ZADD")
+  pure $ RspNormal { resp = encodeInteger $ currCount - oldCount, cmdName = "ZADD" }
 
 zrankCommand :: BS.ByteString -> BS.ByteString -> ClientApp Response
 zrankCommand name member = do
@@ -592,10 +588,10 @@ zrankCommand name member = do
     let precedingCount = (sum . map S.size) precedingSets
     memberSet <- hoistMaybe $ M.lookup score scoreMap
     rank <- hoistMaybe $ S.lookupIndex member memberSet
-    pure $ RspNormal (encodeInteger (precedingCount + rank)) (NotSubsCmd "ZRANK")
+    pure $ RspNormal { resp = encodeInteger (precedingCount + rank), cmdName = "ZRANK" }
   case maybeVal of
     Just result -> pure result
-    Nothing -> pure $ RspNormal encodeNullBulkString (NotSubsCmd "ZRANK")
+    Nothing -> pure $ RspNormal { resp = encodeNullBulkString, cmdName = "ZRANK" }
 
 zrangeCommand :: BS.ByteString -> Int -> Int -> ClientApp Response
 zrangeCommand name start end = do
@@ -605,7 +601,7 @@ zrangeCommand name start end = do
   let itemCount = length allScoresList
   let nStart = normStart start itemCount
   let nEnd = normStop end itemCount
-  pure $ RspNormal (encodeArray True (take (nEnd - nStart + 1) $ drop nStart allScoresList)) (NotSubsCmd "ZRANGE")
+  pure $ RspNormal { resp = encodeArray True (take (nEnd - nStart + 1) $ drop nStart allScoresList), cmdName = "ZRANGE" }
   where
     normStart index itemCount
       | index >= 0 = index
@@ -619,14 +615,14 @@ zrangeCommand name start end = do
 zcardCommand :: BS.ByteString -> ClientApp Response
 zcardCommand name = do
   (ZSet scoreMap _) <- getZSet name
-  pure $ RspNormal (encodeInteger $ (sum . map S.size) $ M.elems scoreMap) (NotSubsCmd "ZCARD")
+  pure $ RspNormal { resp = encodeInteger $ (sum . map S.size) $ M.elems scoreMap, cmdName = "ZCARD" }
 
 zscoreCommand :: BS.ByteString -> BS.ByteString -> ClientApp Response
 zscoreCommand name member = do
   (ZSet _ memberDict) <- getZSet name
   case HM.lookup member memberDict of
-    Just score -> pure $ RspNormal (encodeBulkString (BS8.pack $ show score)) (NotSubsCmd "ZSCORE")
-    Nothing -> pure $ RspNormal encodeNullBulkString (NotSubsCmd "ZSCORE")
+    Just score -> pure $ RspNormal { resp = encodeBulkString (BS8.pack $ show score), cmdName = "ZSCORE" }
+    Nothing -> pure $ RspNormal { resp = encodeNullBulkString, cmdName = "ZSCORE" }
 
 zremCommand :: BS.ByteString -> BS.ByteString -> ClientApp Response
 zremCommand name member = do
@@ -641,26 +637,26 @@ zremCommand name member = do
               liftIO . atomically $
                 modifyTVar' tv $
                   HM.alter (Just . const (ZSet newMap updatedMemberDict) . fromMaybe (ZSet M.empty HM.empty)) name
-              pure $ RspNormal (encodeInteger 1) (NotSubsCmd "ZREM")
-            Nothing -> pure $ RspNormal (encodeInteger 0) (NotSubsCmd "ZREM")
-    Nothing -> pure $ RspNormal (encodeInteger 0) (NotSubsCmd "ZREM")
+              pure $ RspNormal { resp = encodeInteger 1, cmdName = "ZREM" }
+            Nothing -> pure $ RspNormal { resp = encodeInteger 0, cmdName = "ZREM" }
+    Nothing -> pure $ RspNormal { resp = encodeInteger 0, cmdName = "ZREM" }
 
 geoAddCommand :: BS.ByteString -> Double -> Double -> BS.ByteString -> ClientApp Response
 geoAddCommand name longitude latitude member = do
   if longitude >= 180 || longitude <= -180
-    then pure $ RspNormal (encodeSimpleError RErrGeoAddLongRange mempty) (NotSubsCmd "GEOADD")
+    then pure $ RspNormal { resp = encodeSimpleError RErrGeoAddLongRange mempty, cmdName = "GEOADD" }
     else
       if latitude >= 85.05112878 || latitude <= -85.05112878
-        then pure $ RspNormal (encodeSimpleError RErrGeoAddLatRange mempty) (NotSubsCmd "GEOADD")
+        then pure $ RspNormal { resp = encodeSimpleError RErrGeoAddLatRange mempty, cmdName = "GEOADD" }
         else do
           zaddCommand name (U.interleaveGeo latitude longitude) member >>= \case
-            (RspNormal resp _) -> pure $ RspNormal (encodeInteger 1) (NotSubsCmd "GEOADD")
+            (RspNormal { resp = resp }) -> pure $ RspNormal { resp = encodeInteger 1, cmdName = "GEOADD" }
 
 geoPosCommand :: BS.ByteString -> [BS.ByteString] -> ClientApp Response
 geoPosCommand name members = do
   (ZSet _ memberDict) <- getZSet name
   let values = map (`HM.lookup` memberDict) members
-  pure $ RspNormal (encodeArray False (go values [])) (NotSubsCmd "GEOPOS")
+  pure $ RspNormal { resp = encodeArray False (go values []), cmdName = "GEOPOS" }
   where
     go :: [Maybe Double] -> [BS.ByteString] -> [BS.ByteString]
     go [] acc = acc
@@ -681,8 +677,8 @@ geoDistCommand name member1 member2 = do
     let (lat2, long2) = U.deinterleaveGeo score2
     pure $ U.calcGeoDistance (long1, lat1) (long2, lat2)
   case result of
-    Just dist -> pure $ RspNormal (encodeBulkString ((BS8.pack . show) dist)) (NotSubsCmd "GEODIST")
-    Nothing -> pure $ RspNormal (encodeSimpleError RErrGeoDistMissingMember mempty) (NotSubsCmd "GEODIST")
+    Just dist -> pure $ RspNormal { resp = encodeBulkString ((BS8.pack . show) dist), cmdName = "GEODIST" }
+    Nothing -> pure $ RspNormal { resp = encodeSimpleError RErrGeoDistMissingMember mempty, cmdName = "GEODIST" }
 
 geoSearchCommand :: BS.ByteString -> Double -> Double -> Double -> DistUnit -> ClientApp Response
 geoSearchCommand name longitude latitude radius unit = do
@@ -692,7 +688,7 @@ geoSearchCommand name longitude latitude radius unit = do
         DistMile -> radius * 1609.344
         _ -> radius
   let membersInRange = HM.foldrWithKey' (\member score acc -> if calcDistance score longitude latitude <= normRadius then acc ++ [member] else acc) [] memberDict
-  pure $ RspNormal (encodeArray True membersInRange) (NotSubsCmd "GEOSEARCH")
+  pure $ RspNormal { resp = encodeArray True membersInRange, cmdName = "GEOSEARCH" }
   where
     calcDistance score centerLong centerLat =
       let (lat1, long1) = U.deinterleaveGeo score
@@ -703,11 +699,11 @@ aclCommand opt =
   case opt of
     AclWhoAmI -> do
       UserData {name = n} <- gets userData
-      pure $ RspNormal (encodeBulkString n) (NotSubsCmd "ACL")
+      pure $ RspNormal { resp = encodeBulkString n, cmdName = "ACL" }
     AclGetUser user -> do
       UserData {flags = fl, passwords = ps} <- gets userData
       let response = [encodeBulkString "flags", encodeArray True fl, encodeBulkString "passwords", encodeArray True ps]
-      pure $ RspNormal (encodeArray False response) (NotSubsCmd "ACL")
+      pure $ RspNormal { resp = encodeArray False response, cmdName = "ACL" }
     AclSetUser user password -> do
       UserData {flags = fl, passwords = ps} <- gets userData
       let newFlags = delete "nopass" fl
@@ -725,7 +721,7 @@ aclCommand opt =
         modifyTVar' tvUserPass (HM.insert user encryptedPass)
 
       modify' (\cs -> cs {userData = UserData {name = user, passwords = newPasswords, flags = newFlags}})
-      pure $ RspNormal (encodeSimpleString "OK") (NotSubsCmd "ACL")
+      pure $ RspNormal { resp = encodeSimpleString "OK", cmdName = "ACL" }
 
 authCommand :: BS.ByteString -> BS.ByteString -> ClientApp Response
 authCommand userName password = do
@@ -742,16 +738,16 @@ authCommand userName password = do
           then do
             let newPasswords = ps ++ [encodedPass]
             modify' (\cs -> cs {isAuth = True, userData = UserData {name = user, flags = fl, passwords = newPasswords}})
-            pure $ RspNormal (encodeSimpleString "OK") (NotSubsCmd "AUTH")
-          else pure $ RspNormal (encodeSimpleError RErrAuthInvalidUserName mempty) (NotSubsCmd "AUTH")
-      Nothing -> pure $ RspNormal (encodeSimpleError RErrAuthServerAuthUserNotFound mempty) (NotSubsCmd "AUTH")
+            pure $ RspNormal { resp = encodeSimpleString "OK", cmdName = "AUTH" }
+          else pure $ RspNormal { resp = encodeSimpleError RErrAuthInvalidUserName mempty, cmdName = "AUTH" }
+      Nothing -> pure $ RspNormal { resp = encodeSimpleError RErrAuthServerAuthUserNotFound mempty, cmdName = "AUTH" }
     else do
       if user == userName && elem encodedPass ps
         then do
           modify' (\cs -> cs {isAuth = True}) -- this client is now authcenticated
-          pure $ RspNormal (encodeSimpleString "OK") (NotSubsCmd "AUTH")
+          pure $ RspNormal { resp = encodeSimpleString "OK", cmdName = "AUTH" }
         else do
-          pure $ RspNormal (encodeSimpleError RErrAuthInvalidUserName mempty) (NotSubsCmd "AUTH")
+          pure $ RspNormal { resp = encodeSimpleError RErrAuthInvalidUserName mempty, cmdName = "AUTH" }
 
 isAuthorizedCmd :: Command -> ClientApp Bool
 isAuthorizedCmd cmd = do
@@ -767,14 +763,17 @@ handleSubsMode resp = do
   subMode <- getSubscribed
   if subMode then
     case resp of
-      (RspNormal resp (NotSubsCmd cmdName)) -> liftIO $ send sock $ encodeSimpleError RErrSubUnauthorizedCmd cmdName
-      (RspNormal resp SubscribeCmd) -> liftIO $ send sock resp
-      (RspNormal resp PingCmd) -> liftIO $ send sock $ encodeArray True ["pong", ""]
-      (RspContinue resp nextAction (NotSubsCmd cmdName)) -> liftIO $ send sock $ encodeSimpleError RErrSubUnauthorizedCmd cmdName
-      (RspContinue resp nextAction SubscribeCmd) -> liftIO (send sock resp) >> nextAction
+      (RspNormal { cmdName = cn }) -> liftIO $ send sock $ encodeSimpleError RErrSubUnauthorizedCmd cn
+      (RspSubs resp) -> liftIO $ send sock resp
+      RspPing -> liftIO $ send sock $ encodeArray True ["pong", ""]
+      (RspContinue { cmdName = cn }) -> liftIO $ send sock $ encodeSimpleError RErrSubUnauthorizedCmd cn
+      (RspContinueSubs { resp = r, effect = ef }) -> liftIO (send sock r) >> applyEffect ef
   else case resp of
-      (RspNormal resp _) -> liftIO $ send sock resp
-      (RspContinue resp nextAction _) -> liftIO (send sock resp) >> nextAction
+      (RspNormal { resp = r }) -> liftIO $ send sock r
+      (RspContinue { resp = r, effect = ef }) -> liftIO (send sock r) >> applyEffect ef
+      (RspSubs resp) -> liftIO (send sock resp)
+      (RspContinueSubs { resp = r }) -> liftIO (send sock r)
+      RspPing -> liftIO (send sock $ encodeSimpleString "PONG")
 
 unsubcribeCommand :: BS.ByteString -> ClientApp Response
 unsubcribeCommand channel = do
@@ -783,7 +782,7 @@ unsubcribeCommand channel = do
   removeSubChannel channel
   removeChannelSubscriber channel socket
   remaining <- getSubChannels
-  pure $ RspNormal (encodeArray False [encodeBulkString "unsubscribe", encodeBulkString channel, encodeInteger (S.size remaining)]) SubscribeCmd
+  pure $ RspSubs $ encodeArray False [encodeBulkString "unsubscribe", encodeBulkString channel, encodeInteger (S.size remaining)]
 
 runClientCommand :: Command -> ClientApp ()
 runClientCommand cmd = do
@@ -791,8 +790,8 @@ runClientCommand cmd = do
   sock <- getSocket
   if isAuth then do
      cmdResp <- case cmd of
-             Ping -> handleMultiCmd $ pure $ RspNormal (encodeSimpleString "PONG") PingCmd
-             (Echo str) -> handleMultiCmd $ pure $ RspNormal (encodeBulkString str) (NotSubsCmd "ECHO")
+             Ping -> handleMultiCmd $ pure RspPing
+             (Echo str) -> handleMultiCmd $ pure $ RspNormal { resp = encodeBulkString str, cmdName = "ECHO" }
              (Set key val args) -> handleMultiCmd $ setCommand key val args
              (Get key) -> handleMultiCmd $ getCommand key
              (RPush key values) -> handleMultiCmd $ pushCommand key values RightPushCmd
@@ -806,7 +805,7 @@ runClientCommand cmd = do
              (XRange key start end) -> handleMultiCmd $ xrangeCommand key start end
              (XRead keysIds timeout) -> handleMultiCmd $ xreadCommand keysIds timeout
              (Incr key) -> handleMultiCmd $ incrCommand key
-             Multi -> updateMulti True >> pure (RspNormal (encodeSimpleString "OK") (NotSubsCmd "MULTI"))
+             Multi -> updateMulti True >> (pure $ RspNormal { resp = encodeSimpleString "OK", cmdName = "MULTI" })
              Exec -> execCommand
              Discard -> discardCommand
              (Info infoRequest) -> handleMultiCmd $ infoCommand infoRequest
@@ -830,6 +829,6 @@ runClientCommand cmd = do
              (GeoSearch name longitude latitude radius unit) -> geoSearchCommand name longitude latitude radius unit
              (Auth userName password) -> authCommand userName password
              (Acl opt) -> aclCommand opt
-             Cmd -> pure $ RspNormal encodeEmptyArray SubscribeCmd -- convenience command for running redis-cli in bulk mode
+             Cmd -> pure $ RspSubs encodeEmptyArray -- convenience command for running redis-cli in bulk mode
      handleSubsMode cmdResp
   else liftIO $ send sock (encodeSimpleError RErrAuthRequired mempty)
